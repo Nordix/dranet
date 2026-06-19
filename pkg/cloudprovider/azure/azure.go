@@ -46,7 +46,6 @@ const (
 	AttrAzureInterconnectGroupID    = AzureAttrPrefix + "/" + "interconnectGroupId"
 	AttrAzureInterconnectSubgroupID = AzureAttrPrefix + "/" + "interconnectSubgroupId"
 
-
 	// imdsEndpoint is the Azure Instance Metadata Service endpoint.
 	imdsEndpoint = "http://169.254.169.254/metadata/instance"
 	// imdsAPIVersion is the API version used for IMDS queries.
@@ -60,9 +59,9 @@ const (
 // imdsComputeMetadata contains the fields we care about from the Azure IMDS
 // compute metadata response.
 type imdsComputeMetadata struct {
-	PlacementGroupID      string `json:"placementGroupId"`
-	VMSize                string `json:"vmSize"`
-	InterconnectGroupID   string `json:"interconnectGroupId"`
+	PlacementGroupID       string `json:"placementGroupId"`
+	VMSize                 string `json:"vmSize"`
+	InterconnectGroupID    string `json:"interconnectGroupId"`
 	InterconnectSubgroupID string `json:"interconnectSubgroupId"`
 }
 
