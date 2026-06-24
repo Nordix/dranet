@@ -49,7 +49,7 @@ const (
 	// imdsEndpoint is the Azure Instance Metadata Service endpoint.
 	imdsEndpoint = "http://169.254.169.254/metadata/instance"
 	// imdsAPIVersion is the API version used for IMDS queries.
-	imdsAPIVersion = "2024-03-15"
+	imdsAPIVersion = "2025-11-11"
 	// imdsPathCompute is the IMDS path for compute metadata.
 	imdsPathCompute = "compute"
 	// imdsPathNetwork is the IMDS path for network metadata.
