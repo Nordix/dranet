@@ -196,8 +196,9 @@ func (db *DB) Run(ctx context.Context) error {
 // filters out default interfaces, and updates the device store.
 func (db *DB) scan() []resourceapi.Device {
 	devices := db.discoverPCIDevices()
+	devices = db.discoverStandaloneRDMADevices(devices)
 	devices = db.discoverNetworkInterfaces(devices)
-	devices = db.discoverRDMADevices(devices)
+	devices = db.addRDMAAttributes(devices)
 	devices = db.addCloudAttributes(devices)
 
 	// Remove default interface.
@@ -322,7 +323,7 @@ func (db *DB) discoverNetworkInterfaces(pciDevices []resourceapi.Device) []resou
 
 		// When moveIBInterfaces is false, skip IPoIB interfaces.
 		// The underlying PCI device will be discovered as an IB-only RDMA
-		// device (no netdev) via discoverRDMADevices. Associating the IPoIB
+		// device (no netdev) via addRDMAAttributes. Associating the IPoIB
 		// netdev with the PCI device would mask the IB-only nature of the
 		// device and prevent correct RDMA char device injection into pods.
 		// When moveIBInterfaces is true (default), IPoIB interfaces
@@ -489,7 +490,7 @@ func addLinkAttributes(device *resourceapi.Device, link netlink.Link) {
 	}
 }
 
-func (db *DB) discoverRDMADevices(devices []resourceapi.Device) []resourceapi.Device {
+func (db *DB) addRDMAAttributes(devices []resourceapi.Device) []resourceapi.Device {
 	for i := range devices {
 		isRDMA := false
 		if ifName := devices[i].Attributes[apis.AttrInterfaceName].StringValue; ifName != nil && *ifName != "" {
@@ -744,4 +745,54 @@ func isAllocatableNetworkDevice(dev *ghw.PCIDevice) bool {
 	return !nonNetdevDrivers.Has(dev.Driver)
 }
 
+// discoverStandaloneRDMADevices finds RDMA devices in /sys/class/infiniband/
+// that were not already discovered through the PCI class 0x02 scan. This
+// handles devices like eRDMA (PCI class 0x00ff) whose PCI class does not match
+// the standard network device class. Each standalone RDMA device is exposed as
+// an IB-only device (no netdev) with its RDMA device name.
+//
+// Unlike /sys/class/net, /sys/class/infiniband entries are not netns-tagged:
+// they remain visible from the host even after the device is allocated to a pod,
+// so this scan is stable across the full device lifecycle.
+func (db *DB) discoverStandaloneRDMADevices(devices []resourceapi.Device) []resourceapi.Device {
+	knownPCIAddresses := sets.New[string]()
+	for _, device := range devices {
+		if pciAttr, ok := device.Attributes[apis.AttrPCIAddress]; ok && pciAttr.StringValue != nil {
+			knownPCIAddresses.Insert(names.NormalizePCIAddress(*pciAttr.StringValue))
+		}
+	}
 
+	rdmaDevNames := rdmamap.GetRdmaDeviceList()
+	for _, rdmaDevName := range rdmaDevNames {
+		pciAddr, err := pciAddressForRDMADevice(sysInfinibandPath, rdmaDevName)
+		if err != nil {
+			klog.Warningf("Skipping RDMA device %s: %v", rdmaDevName, err)
+			continue
+		}
+		normalizedAddr := names.NormalizePCIAddress(pciAddr.String())
+		if knownPCIAddresses.Has(normalizedAddr) {
+			continue
+		}
+
+		klog.V(2).Infof("Found standalone RDMA device %s at PCI %s", rdmaDevName, pciAddr)
+		device := resourceapi.Device{
+			Name:       normalizedAddr,
+			Attributes: make(map[resourceapi.QualifiedName]resourceapi.DeviceAttribute),
+			Capacity:   make(map[resourceapi.QualifiedName]resourceapi.DeviceCapacity),
+		}
+		device.Attributes[apis.AttrPCIAddress] = resourceapi.DeviceAttribute{StringValue: ptr.To(pciAddr.String())}
+		device.Attributes[apis.AttrRDMADevice] = resourceapi.DeviceAttribute{StringValue: ptr.To(rdmaDevName)}
+
+		pcieRootAttr, err := deviceattribute.GetPCIeRootAttributeByPCIBusID(pciAddr.String())
+		if err != nil {
+			klog.V(4).Infof("Could not get PCIe root for standalone RDMA device %s: %v", rdmaDevName, err)
+		} else {
+			device.Attributes[pcieRootAttr.Name] = pcieRootAttr.Value
+		}
+
+		devices = append(devices, device)
+		knownPCIAddresses.Insert(normalizedAddr)
+	}
+
+	return devices
+}

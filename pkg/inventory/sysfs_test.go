@@ -416,3 +416,49 @@ func TestGetRdmaDeviceFromSysfs(t *testing.T) {
 		})
 	}
 }
+
+func TestPCIAddressForRDMADevice(t *testing.T) {
+	t.Run("resolves PCI address from device symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		// Mimic: /sys/class/infiniband/erdma_0/device ->
+		//        /sys/devices/pci0000:16/0000:16:01.0/0000:1b:00.0
+		pciDir := filepath.Join(dir, "devices", "pci0000:16", "0000:16:01.0", "0000:1b:00.0")
+		if err := os.MkdirAll(pciDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		rdmaDir := filepath.Join(dir, "erdma_0")
+		if err := os.MkdirAll(rdmaDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(pciDir, filepath.Join(rdmaDir, "device")); err != nil {
+			t.Fatal(err)
+		}
+
+		addr, err := pciAddressForRDMADevice(dir, "erdma_0")
+		if err != nil {
+			t.Fatalf("pciAddressForRDMADevice() unexpected error: %v", err)
+		}
+		if addr.String() != "0000:1b:00.0" {
+			t.Errorf("pciAddressForRDMADevice() = %q, want %q", addr.String(), "0000:1b:00.0")
+		}
+	})
+
+	t.Run("missing device symlink returns error", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "erdma_0"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		_, err := pciAddressForRDMADevice(dir, "erdma_0")
+		if err == nil {
+			t.Error("pciAddressForRDMADevice() expected error, got nil")
+		}
+	})
+
+	t.Run("non-existent RDMA device returns error", func(t *testing.T) {
+		dir := t.TempDir()
+		_, err := pciAddressForRDMADevice(dir, "nonexistent")
+		if err == nil {
+			t.Error("pciAddressForRDMADevice() expected error, got nil")
+		}
+	})
+}

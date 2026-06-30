@@ -293,3 +293,21 @@ func pciAddressForNetInterface(ifName string) (*pciAddress, error) {
 	}
 	return address, nil
 }
+
+const sysInfinibandPath = "/sys/class/infiniband/"
+
+// pciAddressForRDMADevice resolves the PCI address for an RDMA device by
+// following the sysfs device symlink. For example, /sys/class/infiniband/erdma_0/device
+// resolves to a path containing the PCI BDF.
+func pciAddressForRDMADevice(basePath, rdmaDevName string) (*pciAddress, error) {
+	deviceLink := filepath.Join(basePath, rdmaDevName, "device")
+	resolved, err := filepath.EvalSymlinks(deviceLink)
+	if err != nil {
+		return nil, fmt.Errorf("could not resolve device symlink for %s: %w", rdmaDevName, err)
+	}
+	addr, err := pciAddressFromPath(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("could not find PCI address for RDMA device %s at %s: %w", rdmaDevName, resolved, err)
+	}
+	return addr, nil
+}
