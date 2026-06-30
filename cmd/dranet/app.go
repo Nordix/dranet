@@ -80,7 +80,7 @@ func init() {
 	flag.DurationVar(&maxPollInterval, "inventory-max-poll-interval", 1*time.Minute, "The maximum interval between two consecutive polls of the inventory.")
 	flag.IntVar(&pollBurst, "inventory-poll-burst", 5, "The number of polls that can be run in a burst.")
 	flag.BoolVar(&moveIBInterfaces, "move-ib-interfaces", true, "If true, InfiniBand (IPoIB) network interfaces associated with PCI devices are moved into pod network namespace. If false, moving IB network interfaces are skipped and the underlying device is exposed as an IB-only RDMA device.")
-	flag.StringVar(&cloudProviderHint, "cloud-provider-hint", "", "Hint for the cloud provider that will be used to select the appropriate provider plugin. Supported values: (AWS, GCE, AZURE, OKE, webhook, NONE). If left unset, the cloud provider is auto-detected.")
+	flag.StringVar(&cloudProviderHint, "cloud-provider-hint", "", "Hint for the cloud provider that will be used to select the appropriate provider plugin. Supported values: (AWS, GCE, AZURE, OKE, ALIBABA, webhook, NONE). If left unset, the cloud provider is auto-detected.")
 	flag.StringVar(&profileProvider, "profile-provider", "cloud", "Provides user intent (cloud, webhook, none). 'cloud' falls back to the cloud-provider's native implementation.")
 	flag.StringVar(&webhookURL, "webhook-url", "", "URL for the webhook provider (required if using webhook for either provider)")
 
