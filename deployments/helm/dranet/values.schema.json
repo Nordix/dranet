@@ -82,7 +82,7 @@
         },
         "cloudProviderHint": {
           "type": "string",
-          "enum": ["GCE", "AZURE", "OKE", "AWS", "NONE"],
+          "enum": ["GCE", "AZURE", "OKE", "AWS", "ALIBABA", "NONE"],
           "description": "Hint for the cloud provider plugin; auto-detected if unset"
         }
       }

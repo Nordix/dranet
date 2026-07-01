@@ -22,6 +22,7 @@ import (
 
 	"cloud.google.com/go/compute/metadata"
 	"sigs.k8s.io/dranet/pkg/cloudprovider"
+	"sigs.k8s.io/dranet/pkg/cloudprovider/alibaba"
 	"sigs.k8s.io/dranet/pkg/cloudprovider/aws"
 	"sigs.k8s.io/dranet/pkg/cloudprovider/azure"
 	"sigs.k8s.io/dranet/pkg/cloudprovider/gce"
@@ -36,6 +37,7 @@ const (
 	CloudProviderHintAWS     CloudProviderHint = "AWS"
 	CloudProviderHintAzure   CloudProviderHint = "AZURE"
 	CloudProviderHintOKE     CloudProviderHint = "OKE"
+	CloudProviderHintAlibaba CloudProviderHint = "ALIBABA"
 	CloudProviderHintWebhook CloudProviderHint = "webhook"
 	CloudProviderHintNone    CloudProviderHint = "NONE"
 )
@@ -54,6 +56,9 @@ func DiscoverCloudProvider(ctx context.Context, webhookURL string) CloudProvider
 	if oke.OnOKE(ctx) {
 		return CloudProviderHintOKE
 	}
+	if alibaba.OnAlibaba(ctx) {
+		return CloudProviderHintAlibaba
+	}
 	if webhookURL != "" && webhook.OnWebhook(ctx, webhookURL) {
 		return CloudProviderHintWebhook
 	}
@@ -71,6 +76,8 @@ func GetInstanceProperties(ctx context.Context, hint CloudProviderHint, webhookU
 		return azure.GetInstance(ctx)
 	case CloudProviderHintOKE:
 		return oke.GetInstance(ctx)
+	case CloudProviderHintAlibaba:
+		return alibaba.GetInstance(ctx)
 	case CloudProviderHintWebhook:
 		if webhookURL == "" {
 			return nil, fmt.Errorf("--webhook-url is required when using the webhook cloud provider")
