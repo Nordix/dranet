@@ -27,12 +27,8 @@ spec:
                 -x LD_LIBRARY_PATH \
                 -x NCCL_DEBUG=INFO \
                 -x NCCL_SOCKET_IFNAME=eth0 \
-                -x NCCL_IB_DISABLE=0 \
                 -x NCCL_IB_HCA=erdma \
                 -x NCCL_SHM_DISABLE=1 \
-                -x NCCL_MNNVL_ENABLE=0 \
-                -x NCCL_NVLS_ENABLE=0 \
-                -x NCCL_NET_GDR_LEVEL=PHB \
                 /opt/nccl_tests/build/all_reduce_perf -b 512M -e 8G -f 2 -g 1 -c 0
     Worker:
       replicas: 2
