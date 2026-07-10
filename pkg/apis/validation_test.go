@@ -381,15 +381,196 @@ func TestValidateInterfaceConfig(t *testing.T) {
 			fieldPath: "iface",
 			expectErr: false, // Function should handle nil gracefully
 		},
+		{
+			name:      "explicit passthrough type",
+			cfg:       &InterfaceConfig{Type: "Passthrough"},
+			fieldPath: "iface",
+			expectErr: false,
+		},
+		{
+			name:      "ipvlan type without ipvlan config",
+			cfg:       &InterfaceConfig{Type: "IPVLAN"},
+			fieldPath: "iface",
+			expectErr: false,
+		},
+		{
+			name:      "ipvlan type with unsupported mode and flag",
+			cfg:       &InterfaceConfig{Type: "IPVLAN", IPVlan: &IPVlanConfig{Mode: "L3", Flag: "Private"}},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  2,
+		},
+		{
+			name:      "passthrough type with ipvlan config",
+			cfg:       &InterfaceConfig{Type: "Passthrough", IPVlan: &IPVlanConfig{Mode: "L2", Flag: "Bridge"}},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
+			name:      "unsupported type",
+			cfg:       &InterfaceConfig{Type: "MACVLAN"},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
+			name:      "invalid addressing mode",
+			cfg:       &InterfaceConfig{Addressing: "bogus"},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
+			name:      "addressing dhcp",
+			cfg:       &InterfaceConfig{Addressing: AddressingModeDHCP},
+			fieldPath: "iface",
+			expectErr: false,
+		},
+		{
+			name:      "addressing dhcp with addresses",
+			cfg:       &InterfaceConfig{Addressing: AddressingModeDHCP, Addresses: []string{"10.0.0.1/24"}},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
+			name:      "dhcp conflicts with explicit static addressing",
+			cfg:       &InterfaceConfig{DHCP: ptr.To(true), Addressing: AddressingModeStatic},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
+			name:      "dhcp with matching addressing dhcp is allowed",
+			cfg:       &InterfaceConfig{DHCP: ptr.To(true), Addressing: AddressingModeDHCP},
+			fieldPath: "iface",
+			expectErr: false,
+		},
+		{
+			name:      "unnumbered on ipvlan subinterface without addresses or dhcp",
+			cfg:       &InterfaceConfig{Type: "IPVLAN", Addressing: AddressingModeUnnumbered},
+			fieldPath: "iface",
+			expectErr: false,
+		},
+		{
+			name:      "unnumbered on non-subinterface type",
+			cfg:       &InterfaceConfig{Type: "Passthrough", Addressing: AddressingModeUnnumbered},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
+			name:      "unnumbered with addresses",
+			cfg:       &InterfaceConfig{Type: "IPVLAN", Addressing: AddressingModeUnnumbered, Addresses: []string{"10.0.0.1/24"}},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
+			name:      "unnumbered with dhcp on ipvlan type",
+			cfg:       &InterfaceConfig{Type: "IPVLAN", Addressing: AddressingModeUnnumbered, DHCP: ptr.To(true)},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  2,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.cfg != nil {
+				nc := &NetworkConfig{Interface: *tt.cfg}
+				nc.Default()
+				tt.cfg = &nc.Interface
+			}
 			errs := validateInterfaceConfig(tt.cfg, tt.fieldPath)
 			if (len(errs) > 0) != tt.expectErr {
 				t.Errorf("validateInterfaceConfig() expectErr %v, got errors: %v", tt.expectErr, errs)
 			}
 			if tt.expectErr && len(errs) != tt.errCount {
 				t.Errorf("validateInterfaceConfig() expected %d errors, got %d: %v", tt.errCount, len(errs), errs)
+			}
+		})
+	}
+}
+
+func TestValidateSubinterfaceOnlyConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfg       *InterfaceConfig
+		fieldPath string
+		expectErr bool
+		errCount  int
+	}{
+		{
+			name:      "addresses only is valid",
+			cfg:       &InterfaceConfig{Type: "IPVLAN", Addresses: []string{"10.0.0.1/24"}},
+			fieldPath: "iface",
+			expectErr: false,
+		},
+		{
+			name:      "addressing unnumbered is valid",
+			cfg:       &InterfaceConfig{Type: "IPVLAN", Addressing: AddressingModeUnnumbered},
+			fieldPath: "iface",
+			expectErr: false,
+		},
+		{
+			name:      "mtu is rejected",
+			cfg:       &InterfaceConfig{Type: "IPVLAN", MTU: ptr.To[int32](1500)},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
+			name:      "hardwareAddr is rejected",
+			cfg:       &InterfaceConfig{Type: "IPVLAN", HardwareAddr: ptr.To("00:1A:2B:3C:4D:5E")},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
+			name:      "gso size is rejected",
+			cfg:       &InterfaceConfig{Type: "IPVLAN", GSOMaxSize: ptr.To[int32](65536)},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
+			name:      "arp settings are rejected",
+			cfg:       &InterfaceConfig{Type: "IPVLAN", ARPIgnore: ptr.To[int32](1)},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
+			name:      "addressing dhcp is rejected",
+			cfg:       &InterfaceConfig{Type: "IPVLAN", Addressing: AddressingModeDHCP},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
+			name:      "deprecated dhcp is rejected",
+			cfg:       &InterfaceConfig{Type: "IPVLAN", DHCP: ptr.To(true)},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
+			name:      "multiple unsupported fields is one error",
+			cfg:       &InterfaceConfig{Type: "IPVLAN", MTU: ptr.To[int32](1500), ARPIgnore: ptr.To[int32](1)},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validateSubinterfaceOnlyConfig(tt.cfg, tt.fieldPath)
+			if (len(errs) > 0) != tt.expectErr {
+				t.Errorf("validateSubinterfaceOnlyConfig() expectErr %v, got errors: %v", tt.expectErr, errs)
+			}
+			if tt.expectErr && len(errs) != tt.errCount {
+				t.Errorf("validateSubinterfaceOnlyConfig() expected %d errors, got %d: %v", tt.errCount, len(errs), errs)
 			}
 		})
 	}
@@ -409,6 +590,16 @@ func TestValidateRDMAOnlyConfigRejectsARPSettings(t *testing.T) {
 		{
 			name:      "arpAnnounce is rejected",
 			raw:       `{"interface":{"arpAnnounce":2}}`,
+			expectErr: true,
+		},
+		{
+			name:      "type is rejected",
+			raw:       `{"interface":{"type":"IPVLAN"}}`,
+			expectErr: true,
+		},
+		{
+			name:      "addressing is rejected",
+			raw:       `{"interface":{"addressing":"DHCP"}}`,
 			expectErr: true,
 		},
 		{
