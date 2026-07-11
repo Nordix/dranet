@@ -84,7 +84,7 @@ func TestCreateContainerUsesPersistedConfigAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newBoltCheckpointer() error: %v", err)
 	}
-	store1, err := NewPodConfigStore(cp1)
+	store1, err := newPodConfigStoreWithCheckpointer(cp1)
 	if err != nil {
 		t.Fatalf("NewPodConfigStore() error: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestCreateContainerUsesPersistedConfigAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newBoltCheckpointer() after restart error: %v", err)
 	}
-	storeAfterRestart, err := NewPodConfigStore(cp2)
+	storeAfterRestart, err := newPodConfigStoreWithCheckpointer(cp2)
 	if err != nil {
 		t.Fatalf("NewPodConfigStore() after restart error: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestRunPodSandboxUsesPersistedConfigAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newBoltCheckpointer() error: %v", err)
 	}
-	store1, err := NewPodConfigStore(cp1)
+	store1, err := newPodConfigStoreWithCheckpointer(cp1)
 	if err != nil {
 		t.Fatalf("NewPodConfigStore() error: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestRunPodSandboxUsesPersistedConfigAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newBoltCheckpointer() after restart error: %v", err)
 	}
-	storeAfterRestart, err := NewPodConfigStore(cp2)
+	storeAfterRestart, err := newPodConfigStoreWithCheckpointer(cp2)
 	if err != nil {
 		t.Fatalf("NewPodConfigStore() after restart error: %v", err)
 	}

@@ -43,7 +43,7 @@ func newTestBoltCheckpointer(t *testing.T) *boltCheckpointer {
 func newTestStoreWithBolt(t *testing.T) (*PodConfigStore, *boltCheckpointer) {
 	t.Helper()
 	cp := newTestBoltCheckpointer(t)
-	store, err := NewPodConfigStore(cp)
+	store, err := newPodConfigStoreWithCheckpointer(cp)
 	if err != nil {
 		t.Fatalf("NewPodConfigStore() error: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestPodConfigStore_Persistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newBoltCheckpointer() error: %v", err)
 	}
-	store1, err := NewPodConfigStore(cp1)
+	store1, err := newPodConfigStoreWithCheckpointer(cp1)
 	if err != nil {
 		t.Fatalf("NewPodConfigStore() error: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestPodConfigStore_Persistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newBoltCheckpointer() reopen error: %v", err)
 	}
-	store2, err := NewPodConfigStore(cp2)
+	store2, err := newPodConfigStoreWithCheckpointer(cp2)
 	if err != nil {
 		t.Fatalf("NewPodConfigStore() reopen error: %v", err)
 	}
@@ -363,9 +363,9 @@ func TestBoltCheckpointer_Errors(t *testing.T) {
 // TestPodConfigStore_NoCheckpointer verifies that PodConfigStore works
 // correctly without a checkpointer (pure in-memory).
 func TestPodConfigStore_NoCheckpointer(t *testing.T) {
-	store, err := NewPodConfigStore(nil)
+	store, err := newPodConfigStoreWithCheckpointer(nil)
 	if err != nil {
-		t.Fatalf("NewPodConfigStore(nil) error: %v", err)
+		t.Fatalf("newPodConfigStoreWithCheckpointer(nil) error: %v", err)
 	}
 
 	store.SetDeviceConfig("pod-1", "eth0", DeviceConfig{

@@ -85,14 +85,6 @@ func WithInventory(db inventoryDB) Option {
 	}
 }
 
-// WithDBPath sets the path for the persistent pod config database.
-// If not set, an in-memory store is used.
-func WithDBPath(path string) Option {
-	return func(o *NetworkDriver) {
-		o.dbPath = path
-	}
-}
-
 // WithKubeletRootDir sets the kubelet data directory (its --root-dir). The
 // driver's registration socket lives under <dir>/plugins_registry and its
 // dra.sock under <dir>/plugins. Set this when the kubelet runs with a
@@ -118,7 +110,6 @@ type NetworkDriver struct {
 	// Cache the rdma shared mode state
 	rdmaSharedMode bool
 	podConfigStore *PodConfigStore
-	dbPath         string // path for persistent bbolt database; empty means in-memory
 
 	// kubeletRootDir is the kubelet data directory (its --root-dir). Set when the
 	// kubelet runs with a non-default --root-dir.
@@ -129,7 +120,7 @@ type NetworkDriver struct {
 
 type Option func(*NetworkDriver)
 
-func Start(ctx context.Context, driverName string, kubeClient kubernetes.Interface, nodeName string, opts ...Option) (*NetworkDriver, error) {
+func Start(ctx context.Context, driverName string, kubeClient kubernetes.Interface, nodeName string, podConfigStore *PodConfigStore, opts ...Option) (*NetworkDriver, error) {
 	registerMetrics()
 
 	rdmaNetnsMode, err := nlwrap.RdmaSystemGetNetnsMode()
@@ -152,29 +143,12 @@ func Start(ctx context.Context, driverName string, kubeClient kubernetes.Interfa
 		rdmaSharedMode: rdmaNetnsMode == apis.RdmaNetnsModeShared,
 		clock:          clock.RealClock{},
 		eventRecorder:  eventRecorder,
+		podConfigStore: podConfigStore,
 	}
 
 	for _, o := range opts {
 		o(plugin)
 	}
-
-	// Initialize the pod config store with optional bbolt checkpoint backend.
-	var checkpointer Checkpointer
-	if plugin.dbPath != "" {
-		var err error
-		checkpointer, err = newBoltCheckpointer(plugin.dbPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to open pod config database at %s: %v", plugin.dbPath, err)
-		}
-	}
-	store, err := NewPodConfigStore(checkpointer)
-	if err != nil {
-		if checkpointer != nil {
-			checkpointer.Close()
-		}
-		return nil, fmt.Errorf("failed to initialize pod config store: %v", err)
-	}
-	plugin.podConfigStore = store
 
 	driverPluginPath := filepath.Join(plugin.kubeletRootDir, "plugins", driverName)
 	err = os.MkdirAll(driverPluginPath, 0750)
@@ -367,11 +341,6 @@ func (np *NetworkDriver) Stop(ctxCancel context.CancelFunc) {
 	ctxCancel()
 
 	np.nriPlugin.Stop()
-
-	// Close the pod config store.
-	if err := np.podConfigStore.Close(); err != nil {
-		klog.Errorf("Failed to close pod config database: %v", err)
-	}
 
 	klog.Info("Driver stopped.")
 }
