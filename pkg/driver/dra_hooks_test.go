@@ -155,9 +155,10 @@ func TestPrepareResourceClaimsMetrics(t *testing.T) {
 		draPluginRequestsLatencySeconds.Reset()
 
 		np := &NetworkDriver{
-			netdb:         newFakeInventoryDB(),
-			driverName:    "test.driver",
-			eventRecorder: record.NewFakeRecorder(100),
+			netdb:          newFakeInventoryDB(),
+			driverName:     "test.driver",
+			eventRecorder:  record.NewFakeRecorder(100),
+			podConfigStore: mustNewPodConfigStore(),
 		}
 
 		claims := []*resourcev1.ResourceClaim{
@@ -1215,6 +1216,164 @@ func testPrepareResourceClaim_Namespaced(t *testing.T) {
 				}
 			},
 			wantErr: "failed to get network interface name for device net-dev-0",
+		},
+		{
+			name: "subinterface resolving with no addresses returns error",
+			claim: &resourcev1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{UID: "claim-uid-subif-noaddr", Namespace: "default", Name: "claim-subif-noaddr"},
+				Status: resourcev1.ResourceClaimStatus{
+					ReservedFor: []resourcev1.ResourceClaimConsumerReference{
+						{APIGroup: "", Resource: "pods", Name: "test-pod", UID: "pod-uid-subif-noaddr"},
+					},
+					Allocation: &resourcev1.AllocationResult{
+						Devices: resourcev1.DeviceAllocationResult{
+							Results: []resourcev1.DeviceRequestAllocationResult{
+								{Driver: testDriverName, Device: "net-dev-0", Request: "req-0"},
+							},
+						},
+					},
+				},
+			},
+			setupDB: func(db *fakeInventoryDB) {
+				db.IsIBOnlyDeviceFunc = func(deviceName string) bool { return false }
+				db.GetNetInterfaceNameFunc = func(deviceName string) (string, error) { return "dummy0", nil }
+				db.GetDeviceFunc = func(deviceName string) (resourcev1.Device, bool) {
+					return resourcev1.Device{Name: deviceName}, true
+				}
+				// Cloud advertises an ipvlan subinterface but resolves no addresses.
+				db.GetDeviceConfigFunc = func(deviceName string) (*apis.NetworkConfig, bool) {
+					return &apis.NetworkConfig{Interface: apis.InterfaceConfig{Type: "IPVLAN"}}, true
+				}
+			},
+			wantErr: "resolved with no addresses",
+		},
+		{
+			name: "unnumbered subinterface is allowed without addresses",
+			claim: &resourcev1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{UID: "claim-uid-subif-unnum", Namespace: "default", Name: "claim-subif-unnum"},
+				Status: resourcev1.ResourceClaimStatus{
+					ReservedFor: []resourcev1.ResourceClaimConsumerReference{
+						{APIGroup: "", Resource: "pods", Name: "test-pod", UID: "pod-uid-subif-unnum"},
+					},
+					Allocation: &resourcev1.AllocationResult{
+						Devices: resourcev1.DeviceAllocationResult{
+							Results: []resourcev1.DeviceRequestAllocationResult{
+								{Driver: testDriverName, Device: "net-dev-0", Request: "req-0"},
+							},
+						},
+					},
+				},
+			},
+			setupDB: func(db *fakeInventoryDB) {
+				db.IsIBOnlyDeviceFunc = func(deviceName string) bool { return false }
+				db.GetNetInterfaceNameFunc = func(deviceName string) (string, error) { return "dummy0", nil }
+				db.GetDeviceFunc = func(deviceName string) (resourcev1.Device, bool) {
+					return resourcev1.Device{Name: deviceName}, true
+				}
+				// Cloud advertises an unnumbered ipvlan subinterface.
+				db.GetDeviceConfigFunc = func(deviceName string) (*apis.NetworkConfig, bool) {
+					return &apis.NetworkConfig{Interface: apis.InterfaceConfig{Type: "IPVLAN", Addressing: apis.AddressingModeUnnumbered}}, true
+				}
+			},
+			wantPodConfig: &PodConfig{
+				DeviceConfigs: map[string]DeviceConfig{
+					"net-dev-0": {
+						Claim: types.NamespacedName{
+							Namespace: "default",
+							Name:      "claim-subif-unnum",
+						},
+						DeviceSnapshot: &resourcev1.Device{Name: "net-dev-0"},
+						NetworkInterfaceConfigInHost: apis.NetworkConfig{
+							Interface: apis.InterfaceConfig{
+								Name: "dummy0",
+							},
+						},
+						NetworkInterfaceConfigInPod: apis.NetworkConfig{
+							Interface: apis.InterfaceConfig{
+								Name:       "dummy0",
+								Type:       "IPVLAN",
+								Addressing: apis.AddressingModeUnnumbered,
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "subinterface with provider-advertised profile resolves addresses and PBR",
+			claim: &resourcev1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{UID: "claim-uid-subif-implicit", Namespace: "default", Name: "claim-subif-implicit"},
+				Status: resourcev1.ResourceClaimStatus{
+					ReservedFor: []resourcev1.ResourceClaimConsumerReference{
+						{APIGroup: "", Resource: "pods", Name: "test-pod", UID: "pod-uid-subif-implicit"},
+					},
+					Allocation: &resourcev1.AllocationResult{
+						Devices: resourcev1.DeviceAllocationResult{
+							Results: []resourcev1.DeviceRequestAllocationResult{
+								{Driver: testDriverName, Device: "net-dev-0", Request: "req-0"},
+							},
+						},
+					},
+				},
+			},
+			setupDB: func(db *fakeInventoryDB) {
+				db.IsIBOnlyDeviceFunc = func(deviceName string) bool { return false }
+				db.GetNetInterfaceNameFunc = func(deviceName string) (string, error) { return "dummy0", nil }
+				db.GetDeviceFunc = func(deviceName string) (resourcev1.Device, bool) {
+					return resourcev1.Device{Name: deviceName}, true
+				}
+				// The cloud advertises an ipvlan subinterface and its own managed
+				// profile, so resolution runs without the user setting profile.
+				db.GetDeviceConfigFunc = func(deviceName string) (*apis.NetworkConfig, bool) {
+					return &apis.NetworkConfig{Profile: "cloud-managed", Interface: apis.InterfaceConfig{Type: "IPVLAN"}}, true
+				}
+				db.GetProfileConfigFunc = func(deviceName string, claimUID types.UID, config *apis.NetworkConfig) (*apis.NetworkConfig, error) {
+					if !config.Interface.IsSubinterface() {
+						return nil, nil
+					}
+					return &apis.NetworkConfig{
+						Interface: apis.InterfaceConfig{Addresses: []string{"10.24.3.5/32"}},
+						Routes: []apis.RouteConfig{
+							{Destination: "10.24.3.1/32", Scope: 253, Table: 1100},
+							{Destination: "0.0.0.0/0", Gateway: "10.24.3.1", Table: 1100},
+						},
+						Rules: []apis.RuleConfig{
+							{Source: "10.24.3.5/32", Table: 1100, Priority: apis.SourceRoutingRulePriority},
+						},
+					}, nil
+				}
+			},
+			wantPodConfig: &PodConfig{
+				DeviceConfigs: map[string]DeviceConfig{
+					"net-dev-0": {
+						Claim: types.NamespacedName{
+							Namespace: "default",
+							Name:      "claim-subif-implicit",
+						},
+						DeviceSnapshot: &resourcev1.Device{Name: "net-dev-0"},
+						NetworkInterfaceConfigInHost: apis.NetworkConfig{
+							Interface: apis.InterfaceConfig{
+								Name: "dummy0",
+							},
+						},
+						NetworkInterfaceConfigInPod: apis.NetworkConfig{
+							Profile: "cloud-managed",
+							Interface: apis.InterfaceConfig{
+								Name:      "dummy0",
+								Type:      "IPVLAN",
+								Addresses: []string{"10.24.3.5/32"},
+							},
+							Routes: []apis.RouteConfig{
+								{Destination: "10.24.3.1/32", Scope: 253, Table: 1100},
+								{Destination: "0.0.0.0/0", Gateway: "10.24.3.1", Table: 1100},
+							},
+							Rules: []apis.RuleConfig{
+								{Source: "10.24.3.5/32", Table: 1100, Priority: apis.SourceRoutingRulePriority},
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 
