@@ -1327,7 +1327,7 @@ func testPrepareResourceClaim_Namespaced(t *testing.T) {
 				db.GetDeviceConfigFunc = func(deviceName string) (*apis.NetworkConfig, bool) {
 					return &apis.NetworkConfig{Profile: "cloud-managed", Interface: apis.InterfaceConfig{Type: "IPVLAN"}}, true
 				}
-				db.GetProfileConfigFunc = func(deviceName string, claimUID types.UID, config *apis.NetworkConfig) (*apis.NetworkConfig, error) {
+				db.GetProfileConfigFunc = func(deviceName string, claim *resourcev1.ResourceClaim, config *apis.NetworkConfig) (*apis.NetworkConfig, error) {
 					if !config.Interface.IsSubinterface() {
 						return nil, nil
 					}

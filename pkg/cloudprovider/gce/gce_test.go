@@ -19,7 +19,9 @@ package gce
 import (
 	"testing"
 
+	"sigs.k8s.io/dranet/pkg/apis"
 	"sigs.k8s.io/dranet/pkg/cloudprovider"
+	"sigs.k8s.io/dranet/pkg/ipam"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -152,5 +154,296 @@ func TestGetDeviceAttributes(t *testing.T) {
 				t.Errorf("GetDeviceAttributes() returned unexpected diff (-want, +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestGetProfileConfig(t *testing.T) {
+	const mac = "00:11:22:33:44:55"
+	dualStackIface := gceNetworkInterface{
+		Mac:       mac,
+		IPAliases: []string{"10.24.3.0/24"},
+		IPv6:      []string{"2001:db8:1234:5678::/64"},
+	}
+	bareIface := gceNetworkInterface{Mac: mac}
+	ipvlanConfig := func() *apis.NetworkConfig {
+		return &apis.NetworkConfig{Interface: apis.InterfaceConfig{Type: apis.InterfaceTypeIPVLAN}}
+	}
+
+	tests := []struct {
+		name      string
+		mac       string
+		iface     gceNetworkInterface
+		config    *apis.NetworkConfig
+		wantAddrs int
+		wantErr   bool
+		nilIPAM   bool
+	}{
+		{
+			name:      "dual-stack subinterface allocates one address per family",
+			mac:       mac,
+			iface:     dualStackIface,
+			config:    ipvlanConfig(),
+			wantAddrs: 2,
+		},
+		{
+			name:   "empty MAC returns nil",
+			mac:    "",
+			iface:  dualStackIface,
+			config: ipvlanConfig(),
+		},
+		{
+			name:   "MAC not found returns nil",
+			mac:    "aa:bb:cc:dd:ee:ff",
+			iface:  dualStackIface,
+			config: ipvlanConfig(),
+		},
+		{
+			name:   "non-subinterface config returns nil",
+			mac:    mac,
+			iface:  dualStackIface,
+			config: &apis.NetworkConfig{},
+		},
+		{
+			name:    "subinterface without cloud ranges returns error",
+			mac:     mac,
+			iface:   bareIface,
+			config:  ipvlanConfig(),
+			wantErr: true,
+		},
+		{
+			name:    "subinterface without IPAM returns error",
+			mac:     mac,
+			iface:   dualStackIface,
+			config:  ipvlanConfig(),
+			nilIPAM: true,
+			wantErr: true,
+		},
+		{
+			name:      "static addresses are reserved not allocated",
+			mac:       mac,
+			iface:     dualStackIface,
+			config:    &apis.NetworkConfig{Interface: apis.InterfaceConfig{Type: apis.InterfaceTypeIPVLAN, Addresses: []string{"10.24.3.5/32"}}},
+			wantAddrs: 0,
+		},
+		{
+			name:    "invalid IPv6 metadata returns error",
+			mac:     mac,
+			iface:   gceNetworkInterface{Mac: mac, IPv6: []string{"not-an-ip"}},
+			config:  ipvlanConfig(),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			instance := &GCEInstance{Interfaces: []gceNetworkInterface{tt.iface}}
+			if !tt.nilIPAM {
+				instance.localIPAM = ipam.NewLocalIPAM(nil)
+			}
+
+			got, err := instance.GetProfileConfig(cloudprovider.DeviceIdentifiers{MAC: tt.mac}, nil, tt.config)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("GetProfileConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if tt.wantAddrs == 0 {
+				if got != nil {
+					t.Fatalf("GetProfileConfig() = %#v, want nil", got)
+				}
+				return
+			}
+			if got == nil || len(got.Interface.Addresses) != tt.wantAddrs {
+				t.Fatalf("GetProfileConfig() addresses = %v, want %d", got, tt.wantAddrs)
+			}
+		})
+	}
+}
+
+// TestGetProfileConfigSourceRouting verifies that when the VM metadata carries
+// the gateways, the profile returns the full policy based routing configuration
+// (per-device table routes plus per-address source rules) through the existing
+// Routes/Rules API, so the driver applies it with no special casing.
+func TestGetProfileConfigSourceRouting(t *testing.T) {
+	const mac = "00:11:22:33:44:55"
+	iface := gceNetworkInterface{
+		Mac:         mac,
+		IPAliases:   []string{"10.24.3.0/24"},
+		IPv6:        []string{"2001:db8:1234:5678::/64"},
+		Gateway:     "10.24.3.1",
+		GatewayIPv6: "fe80::1",
+	}
+	instance := &GCEInstance{Interfaces: []gceNetworkInterface{iface}, localIPAM: ipam.NewLocalIPAM(nil)}
+	ipvlanConfig := &apis.NetworkConfig{Interface: apis.InterfaceConfig{Type: apis.InterfaceTypeIPVLAN}}
+
+	got, err := instance.GetProfileConfig(cloudprovider.DeviceIdentifiers{MAC: mac}, nil, ipvlanConfig)
+	if err != nil {
+		t.Fatalf("GetProfileConfig() error = %v", err)
+	}
+	if got == nil || len(got.Interface.Addresses) != 2 {
+		t.Fatalf("GetProfileConfig() = %#v, want 2 allocated addresses", got)
+	}
+
+	table := apis.TableIDForName(mac)
+	wantRoutes := []apis.RouteConfig{
+		{Destination: "10.24.3.1/32", Scope: 253, Table: table},
+		{Destination: "0.0.0.0/0", Gateway: "10.24.3.1", Table: table},
+		{Destination: "fe80::1/128", Scope: 253, Table: table},
+		{Destination: "::/0", Gateway: "fe80::1", Table: table},
+	}
+	if diff := cmp.Diff(wantRoutes, got.Routes); diff != "" {
+		t.Errorf("Routes mismatch (-want +got):\n%s", diff)
+	}
+
+	if len(got.Rules) != 2 {
+		t.Fatalf("expected 2 rules, got %d: %+v", len(got.Rules), got.Rules)
+	}
+	// Allocated addresses are already host prefixes, so rule sources match them.
+	for i, rule := range got.Rules {
+		if rule.Source != got.Interface.Addresses[i] || rule.Table != table || rule.Priority != apis.SourceRoutingRulePriority {
+			t.Errorf("rule[%d] = %+v, want source %s table %d priority %d", i, rule, got.Interface.Addresses[i], table, apis.SourceRoutingRulePriority)
+		}
+	}
+
+	// A config that already carries routes or rules owns its routing:
+	// the profile must only return the allocated addresses.
+	userOwned := &apis.NetworkConfig{
+		Interface: apis.InterfaceConfig{Type: apis.InterfaceTypeIPVLAN},
+		Routes:    []apis.RouteConfig{{Destination: "0.0.0.0/0", Gateway: "10.24.3.1"}},
+	}
+	got, err = instance.GetProfileConfig(cloudprovider.DeviceIdentifiers{MAC: mac}, nil, userOwned)
+	if err != nil {
+		t.Fatalf("GetProfileConfig() error = %v", err)
+	}
+	if got == nil || len(got.Interface.Addresses) != 2 {
+		t.Fatalf("GetProfileConfig() = %#v, want 2 allocated addresses", got)
+	}
+	if len(got.Routes) != 0 || len(got.Rules) != 0 {
+		t.Errorf("expected no synthesized routes/rules for user-owned routing, got routes %+v rules %+v", got.Routes, got.Rules)
+	}
+}
+
+func TestGetIPv6Range(t *testing.T) {
+	tests := []struct {
+		name      string
+		baseIPStr string
+		want      string
+		wantErr   bool
+	}{
+		{
+			name:      "valid CIDR prefix /64",
+			baseIPStr: "2001:db8:1234:5678::/64",
+			want:      "2001:db8:1234:5678:c0de::/80",
+			wantErr:   false,
+		},
+		{
+			name:      "too large CIDR prefix /112",
+			baseIPStr: "2001:db8:1234:5678:abcd:ef01:2345::/112",
+			wantErr:   true,
+		},
+		{
+			name:      "plain IP, no CIDR prefix",
+			baseIPStr: "2001:db8:1234:5678:abcd:ef01:2345:6789",
+			wantErr:   true,
+		},
+		{
+			name:      "invalid IP format",
+			baseIPStr: "invalid-ip",
+			wantErr:   true,
+		},
+		{
+			name:      "IPv4 CIDR input",
+			baseIPStr: "192.168.1.0/24",
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := getIPv6Range(tt.baseIPStr)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("getIPv6Range() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("getIPv6Range() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSubinterfaceRanges(t *testing.T) {
+	tests := []struct {
+		name    string
+		iface   gceNetworkInterface
+		want    [][2]string // {start, end} per range, in order.
+		wantErr bool
+	}{
+		{
+			name:  "IPv4 alias only",
+			iface: gceNetworkInterface{IPAliases: []string{"10.24.3.0/24"}},
+			want:  [][2]string{{"10.24.3.1", "10.24.3.254"}},
+		},
+		{
+			name:  "IPv6 only",
+			iface: gceNetworkInterface{IPv6: []string{"2001:db8:1234:5678::/64"}},
+			want:  [][2]string{{"2001:db8:1234:5678:c0de::1", "2001:db8:1234:5678:c0de:ffff:ffff:fffe"}},
+		},
+		{
+			name:  "dual stack orders IPv6 before IPv4",
+			iface: gceNetworkInterface{IPAliases: []string{"10.24.3.0/24"}, IPv6: []string{"2001:db8:1234:5678::/64"}},
+			want: [][2]string{
+				{"2001:db8:1234:5678:c0de::1", "2001:db8:1234:5678:c0de:ffff:ffff:fffe"},
+				{"10.24.3.1", "10.24.3.254"},
+			},
+		},
+		{
+			name:  "no IPv6 or aliases yields no ranges",
+			iface: gceNetworkInterface{Mac: "00:11:22:33:44:55"},
+			want:  nil,
+		},
+		{
+			name:    "invalid IPv6 base returns error",
+			iface:   gceNetworkInterface{IPv6: []string{"not-an-ip"}},
+			wantErr: true,
+		},
+		{
+			name:    "invalid IPv4 alias returns error",
+			iface:   gceNetworkInterface{IPAliases: []string{"bad-cidr"}},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := &GCEInstance{}
+			got, err := g.subinterfaceRanges(tt.iface)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("subinterfaceRanges() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("subinterfaceRanges() got %d ranges, want %d (%v)", len(got), len(tt.want), got)
+			}
+			for i, r := range got {
+				if r.Start.String() != tt.want[i][0] || r.End.String() != tt.want[i][1] {
+					t.Errorf("range[%d] = [%s, %s], want [%s, %s]", i, r.Start, r.End, tt.want[i][0], tt.want[i][1])
+				}
+			}
+		})
+	}
+}
+
+func TestWithReservedAddresses(t *testing.T) {
+	g := &GCEInstance{localIPAM: ipam.NewLocalIPAM(nil)}
+	WithReservedAddresses([]string{"10.0.0.5/32"})(g)
+
+	if err := g.localIPAM.Reserve([]string{"10.0.0.5/32"}); err == nil {
+		t.Errorf("expected 10.0.0.5/32 to already be reserved, but it was accepted again")
+	}
+	if err := g.localIPAM.Reserve([]string{"10.0.0.6/32"}); err != nil {
+		t.Errorf("expected 10.0.0.6/32 to be free, got error: %v", err)
 	}
 }

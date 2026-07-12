@@ -201,8 +201,9 @@ func main() {
 		profileProvider:   profileProvider,
 		webhookURL:        webhookURL,
 		dependencies: discovery.Dependencies{
-			NodeClient: clientset.CoreV1().Nodes(),
-			NodeName:   nodeName,
+			NodeClient:        clientset.CoreV1().Nodes(),
+			NodeName:          nodeName,
+			ReservedAddresses: store.GetInUseSubinterfaceIPs(),
 		},
 	}
 	cloudInst, profProv, err := setupProviders(ctx, providerOpts)
