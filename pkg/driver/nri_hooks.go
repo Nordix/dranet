@@ -222,7 +222,7 @@ func (np *NetworkDriver) runPodSandbox(ctx context.Context, pod *api.PodSandbox,
 				metav1.ApplyOptions{FieldManager: np.driverName, Force: true},
 			)
 			if err != nil {
-				claimLogger.Info("Failed to update status for claim", "err", err)
+				claimLogger.Error(err, "Failed to update status for claim")
 			} else {
 				claimLogger.V(4).Info("Updated status for claim")
 			}
@@ -238,7 +238,7 @@ func attachRdmaToNS(ctx context.Context, linkDev, ns string, resourceClaimStatus
 	logger := klog.LoggerWithValues(klog.FromContext(ctx), "rdmaDevice", linkDev, "netns", ns)
 	logger.V(2).Info("RunPodSandbox processing RDMA device")
 	if err := nsAttachRdmadev(linkDev, ns); err != nil {
-		logger.Info("RunPodSandbox error moving RDMA device to namespace", "err", err)
+		logger.Error(err, "RunPodSandbox error moving RDMA device to namespace")
 		return fmt.Errorf("error moving RDMA device %s to namespace %s: %v", linkDev, ns, err)
 	}
 	resourceClaimStatusDevice.WithConditions(
@@ -262,7 +262,7 @@ func attachNetdevToNS(ctx context.Context, ns, deviceName string, config DeviceC
 	// use https://github.com/opencontainers/runtime-spec/pull/1271
 	networkData, err := nsAttachNetdev(ifName, ns, config.NetworkInterfaceConfigInPod.Interface)
 	if err != nil {
-		logger.Info("RunPodSandbox error moving network device to namespace", "err", err)
+		logger.Error(err, "RunPodSandbox error moving network device to namespace")
 		return fmt.Errorf("error moving network device %s to namespace %s: %v", deviceName, ns, err)
 	}
 
@@ -285,7 +285,7 @@ func attachNetdevToNS(ctx context.Context, ns, deviceName string, config DeviceC
 	if config.NetworkInterfaceConfigInPod.Ethtool != nil {
 		err = applyEthtoolConfig(ns, ifNameInNs, config.NetworkInterfaceConfigInPod.Ethtool)
 		if err != nil {
-			logger.Info("RunPodSandbox error applying ethtool config", "podInterface", ifNameInNs, "err", err)
+			logger.Error(err, "RunPodSandbox error applying ethtool config", "podInterface", ifNameInNs)
 			return fmt.Errorf("error applying ethtool config for %s in ns %s: %v", ifNameInNs, ns, err)
 		}
 	}
@@ -295,7 +295,7 @@ func attachNetdevToNS(ctx context.Context, ns, deviceName string, config DeviceC
 		*config.NetworkInterfaceConfigInPod.Interface.DisableEBPFPrograms {
 		err := detachEBPFPrograms(ns, ifNameInNs)
 		if err != nil {
-			logger.Info("Error disabling ebpf programs", "podInterface", ifNameInNs, "err", err)
+			logger.Error(err, "Error disabling ebpf programs", "podInterface", ifNameInNs)
 			return fmt.Errorf("error disabling ebpf programs for %s in ns %s: %v", ifNameInNs, ns, err)
 		}
 	}
@@ -311,7 +311,7 @@ func attachNetdevToNS(ctx context.Context, ns, deviceName string, config DeviceC
 	// Configure routes
 	err = applyRoutingConfig(ns, ifNameInNs, config.NetworkInterfaceConfigInPod.Routes, vrfTable)
 	if err != nil {
-		logger.Info("RunPodSandbox error configuring routing", "podInterface", ifNameInNs, "err", err)
+		logger.Error(err, "RunPodSandbox error configuring routing", "podInterface", ifNameInNs)
 		return fmt.Errorf("error configuring device %s routes on namespace %s: %v", deviceName, ns, err)
 	}
 
@@ -320,7 +320,7 @@ func attachNetdevToNS(ctx context.Context, ns, deviceName string, config DeviceC
 	if vrfTable == 0 {
 		err = applyRulesConfig(ns, config.NetworkInterfaceConfigInPod.Rules)
 		if err != nil {
-			logger.Info("RunPodSandbox error configuring rules", "err", err)
+			logger.Error(err, "RunPodSandbox error configuring rules")
 			return fmt.Errorf("error configuring device %s rules on namespace %s: %v", deviceName, ns, err)
 		}
 	}
@@ -328,7 +328,7 @@ func attachNetdevToNS(ctx context.Context, ns, deviceName string, config DeviceC
 	// Configure neighbors
 	err = applyNeighborConfig(ns, ifNameInNs, config.NetworkInterfaceConfigInPod.Neighbors)
 	if err != nil {
-		logger.Info("RunPodSandbox failed to apply neighbor configuration", "podInterface", ifNameInNs, "err", err)
+		logger.Error(err, "RunPodSandbox failed to apply neighbor configuration", "podInterface", ifNameInNs)
 		return fmt.Errorf("failed to apply neighbor configuration for interface %s in namespace %s: %w", ifNameInNs, ns, err)
 	}
 
