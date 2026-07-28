@@ -98,7 +98,7 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/dranet/refs/h
 or using the Helm chart:
 
 ```sh
-helm install -n kube-system dranet oci://registry.k8s.io/networking/charts/dranet --version v1.3.0
+helm install -n kube-system dranet oci://registry.k8s.io/networking/charts/dranet --version v1.4.0
 ```
 
 For available configuration options, see the [chart README](deployments/helm/dranet/README.md).
