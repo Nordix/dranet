@@ -301,6 +301,46 @@ func TestValidateInterfaceConfig(t *testing.T) {
 			expectErr: false,
 		},
 		{
+			name:      "valid ARP settings",
+			cfg:       &InterfaceConfig{Name: "eth0", ARPIgnore: ptr.To[int32](1), ARPAnnounce: ptr.To[int32](2)},
+			fieldPath: "iface",
+			expectErr: false,
+		},
+		{
+			name:      "valid ARP settings at range bounds",
+			cfg:       &InterfaceConfig{Name: "eth0", ARPIgnore: ptr.To[int32](8), ARPAnnounce: ptr.To[int32](0)},
+			fieldPath: "iface",
+			expectErr: false,
+		},
+		{
+			name:      "invalid arpIgnore (too large)",
+			cfg:       &InterfaceConfig{Name: "eth0", ARPIgnore: ptr.To[int32](9)},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
+			name:      "invalid arpIgnore (negative)",
+			cfg:       &InterfaceConfig{Name: "eth0", ARPIgnore: ptr.To[int32](-1)},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
+			name:      "invalid arpAnnounce (too large)",
+			cfg:       &InterfaceConfig{Name: "eth0", ARPAnnounce: ptr.To[int32](3)},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
+			name:      "invalid arpAnnounce (negative)",
+			cfg:       &InterfaceConfig{Name: "eth0", ARPAnnounce: ptr.To[int32](-1)},
+			fieldPath: "iface",
+			expectErr: true,
+			errCount:  1,
+		},
+		{
 			name:      "multiple errors",
 			cfg:       &InterfaceConfig{Name: "eth/0", Addresses: []string{"badip"}, MTU: ptr.To[int32](0)},
 			fieldPath: "iface",
@@ -322,6 +362,38 @@ func TestValidateInterfaceConfig(t *testing.T) {
 			}
 			if tt.expectErr && len(errs) != tt.errCount {
 				t.Errorf("validateInterfaceConfig() expected %d errors, got %d: %v", tt.errCount, len(errs), errs)
+			}
+		})
+	}
+}
+
+func TestValidateRDMAOnlyConfigRejectsARPSettings(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       string
+		expectErr bool
+	}{
+		{
+			name:      "arpIgnore is rejected",
+			raw:       `{"interface":{"arpIgnore":1}}`,
+			expectErr: true,
+		},
+		{
+			name:      "arpAnnounce is rejected",
+			raw:       `{"interface":{"arpAnnounce":2}}`,
+			expectErr: true,
+		},
+		{
+			name:      "empty config is accepted",
+			raw:       `{}`,
+			expectErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := ValidateRDMAOnlyConfig(&runtime.RawExtension{Raw: []byte(tt.raw)})
+			if (len(errs) > 0) != tt.expectErr {
+				t.Errorf("ValidateRDMAOnlyConfig() expectErr %v, got errors: %v", tt.expectErr, errs)
 			}
 		})
 	}

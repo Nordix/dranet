@@ -137,6 +137,12 @@ func nsAttachNetdev(hostIfName string, containerNsPAth string, interfaceConfig a
 		return nil, fmt.Errorf("link not found for interface %s on namespace %s: %w", ifName, containerNsPAth, err)
 	}
 
+	// Apply before the link comes up so it never answers ARP with the wrong policy.
+	if err := applyInterfaceARPConfig(containerNsPAth, ifName, interfaceConfig); err != nil {
+		rollbackErr := nsDetachNetdev(containerNsPAth, ifName, hostIfName)
+		return nil, fmt.Errorf("failed to apply ARP configuration to interface %s in namespace %s: %w", ifName, containerNsPAth, errors.Join(err, rollbackErr))
+	}
+
 	networkData := &resourceapi.NetworkDeviceData{
 		InterfaceName:   nsLink.Attrs().Name,
 		HardwareAddress: string(nsLink.Attrs().HardwareAddr.String()),

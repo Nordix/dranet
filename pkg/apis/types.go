@@ -86,6 +86,18 @@ type InterfaceConfig struct {
 	// This sets /proc/sys/net/ipv4/conf/<iface>/forwarding and the ipv6 counterpart.
 	Forwarding *bool `json:"forwarding,omitempty"`
 
+	// ARPIgnore sets which ARP requests the interface answers.
+	// This sets /proc/sys/net/ipv4/conf/<iface>/arp_ignore. Valid values are 0-8.
+	// The kernel resets this to the namespace default when the interface moves
+	// into the Pod, so it must be set explicitly to survive the move.
+	ARPIgnore *int32 `json:"arpIgnore,omitempty"`
+
+	// ARPAnnounce sets the source address the interface uses in ARP requests.
+	// This sets /proc/sys/net/ipv4/conf/<iface>/arp_announce. Valid values are 0-2.
+	// The kernel resets this to the namespace default when the interface moves
+	// into the Pod, so it must be set explicitly to survive the move.
+	ARPAnnounce *int32 `json:"arpAnnounce,omitempty"`
+
 	// VRF specifies the Virtual Routing and Forwarding domain this interface should belong to.
 	// If provided, the interface will be enslaved to a VRF device with this name.
 	// This enables grouping multiple network interfaces into the same VRF.

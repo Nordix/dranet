@@ -177,6 +177,15 @@ func validateInterfaceConfig(cfg *InterfaceConfig, fieldPath string) (allErrors 
 		allErrors = append(allErrors, fmt.Errorf("%s.grov4MaxSize: must be positive, got %d", fieldPath, *cfg.GROIPv4MaxSize))
 	}
 
+	// Ranges are the ones documented in the kernel ip-sysctl reference.
+	if cfg.ARPIgnore != nil && (*cfg.ARPIgnore < 0 || *cfg.ARPIgnore > 8) {
+		allErrors = append(allErrors, fmt.Errorf("%s.arpIgnore: must be between 0 and 8, got %d", fieldPath, *cfg.ARPIgnore))
+	}
+
+	if cfg.ARPAnnounce != nil && (*cfg.ARPAnnounce < 0 || *cfg.ARPAnnounce > 2) {
+		allErrors = append(allErrors, fmt.Errorf("%s.arpAnnounce: must be between 0 and 2, got %d", fieldPath, *cfg.ARPAnnounce))
+	}
+
 	if cfg.VRF != nil {
 		allErrors = append(allErrors, validateVRFConfig(cfg.VRF, fieldPath+".vrf")...)
 	}
@@ -329,7 +338,8 @@ func ValidateRDMAOnlyConfig(raw *runtime.RawExtension) []error {
 		config.Interface.MTU != nil || config.Interface.HardwareAddr != nil ||
 		config.Interface.DHCP != nil || config.Interface.GSOMaxSize != nil ||
 		config.Interface.GROMaxSize != nil || config.Interface.GSOIPv4MaxSize != nil ||
-		config.Interface.GROIPv4MaxSize != nil || config.Interface.DisableEBPFPrograms != nil {
+		config.Interface.GROIPv4MaxSize != nil || config.Interface.DisableEBPFPrograms != nil ||
+		config.Interface.ARPIgnore != nil || config.Interface.ARPAnnounce != nil {
 		allErrors = append(allErrors, fmt.Errorf("interface configuration is not supported for RDMA-only devices (no network interface present)"))
 	}
 	if len(config.Routes) > 0 {

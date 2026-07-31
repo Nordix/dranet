@@ -64,6 +64,14 @@ type InterfaceConfig struct {
 	// GROv4MaxSize sets the maximum Generic Receive Offload size.
 	// Managed by `ip link set <dev> gro_ipv4_max_size <val>`. For enabling Big TCP.
 	GROIPv4MaxSize *int32 `json:"groIPv4MaxSize,omitempty"`
+
+	// ARPIgnore sets which ARP requests the interface answers.
+	// This sets /proc/sys/net/ipv4/conf/<iface>/arp_ignore. Valid values are 0-8.
+	ARPIgnore *int32 `json:"arpIgnore,omitempty"`
+
+	// ARPAnnounce sets the source address the interface uses in ARP requests.
+	// This sets /proc/sys/net/ipv4/conf/<iface>/arp_announce. Valid values are 0-2.
+	ARPAnnounce *int32 `json:"arpAnnounce,omitempty"`
 }
 ```
 
@@ -75,6 +83,15 @@ type InterfaceConfig struct {
 * **groMaxSize** (int32, optional): The maximum Generic Receive Offload size for IPv6.
 * **gsoIPv4MaxSize** (int32, optional): The maximum Generic Segmentation Offload size for IPv4.
 * **groIPv4MaxSize** (int32, optional): The maximum Generic Receive Offload size for IPv4.
+* **arpIgnore** (int32, optional): Which ARP requests the interface answers, from 0 to 8. Sets `/proc/sys/net/ipv4/conf/<iface>/arp_ignore`.
+* **arpAnnounce** (int32, optional): The source address the interface uses in ARP requests, from 0 to 2. Sets `/proc/sys/net/ipv4/conf/<iface>/arp_announce`.
+
+The kernel resets both ARP settings to the network namespace default when an interface
+moves into a Pod, so a value configured on the host does not survive the move and has to
+be requested here. Setups that attach several interfaces sharing one IP subnet, such as
+multi-NIC RDMA nodes, typically need `arpIgnore: 1` and `arpAnnounce: 2`. Without them an
+interface can answer ARP for another interface's address, or send requests with a source
+address from the wrong subnet, which makes neighbor resolution pick the wrong link.
 
 #### Route Configuration (RouteConfig)
 

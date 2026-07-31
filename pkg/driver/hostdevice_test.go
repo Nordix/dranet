@@ -19,6 +19,7 @@ package driver
 import (
 	"crypto/rand"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path"
@@ -28,6 +29,8 @@ import (
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
+	"k8s.io/component-helpers/node/util/sysctl"
+	sysctltesting "k8s.io/component-helpers/node/util/sysctl/testing"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/dranet/internal/nlwrap"
 	"sigs.k8s.io/dranet/pkg/apis"
@@ -104,6 +107,8 @@ func Test_nhNetdev(t *testing.T) {
 		GROMaxSize:     ptr.To[int32](1025),
 		GSOIPv4MaxSize: ptr.To[int32](1026),
 		GROIPv4MaxSize: ptr.To[int32](1027),
+		ARPIgnore:      ptr.To[int32](1),
+		ARPAnnounce:    ptr.To[int32](2),
 	}
 
 	deviceData, err := nsAttachNetdev(ifaceName, path.Join("/run/netns", nsName), config)
@@ -153,6 +158,31 @@ func Test_nhNetdev(t *testing.T) {
 			t.Errorf("HardwareAddr not reported")
 		}
 
+		// lo is the control: it shares the namespace but has no config, so it
+		// shows the namespace default the moved interface would have kept.
+		for _, tc := range []struct {
+			setting string
+			want    int
+		}{
+			{"arp_ignore", int(*config.ARPIgnore)},
+			{"arp_announce", int(*config.ARPAnnounce)},
+		} {
+			got, err := sysctl.New().GetSysctl(fmt.Sprintf("net/ipv4/conf/%s/%s", config.Name, tc.setting))
+			if err != nil {
+				t.Fatalf("failed to read %s in pod namespace: %v", tc.setting, err)
+			}
+			if got != tc.want {
+				t.Errorf("%s = %d, want %d", tc.setting, got, tc.want)
+			}
+			baseline, err := sysctl.New().GetSysctl(fmt.Sprintf("net/ipv4/conf/lo/%s", tc.setting))
+			if err != nil {
+				t.Fatalf("failed to read baseline %s in pod namespace: %v", tc.setting, err)
+			}
+			if baseline == tc.want {
+				t.Errorf("%s baseline is already %d, the test cannot prove the config was applied", tc.setting, baseline)
+			}
+		}
+
 		cmd = exec.Command("ip", "addr", "show", config.Name)
 		output, err = cmd.CombinedOutput()
 		if err != nil {
@@ -175,7 +205,29 @@ func Test_nhNetdev(t *testing.T) {
 
 	err = nsDetachNetdev(path.Join("/run/netns", nsName), config.Name, ifaceName)
 	if err != nil {
-		t.Fatalf("fail to attach netdev to namespace: %v", err)
+		t.Fatalf("failed to detach netdev from namespace: %v", err)
 	}
 
+	// A failure applying the ARP settings must return the device to the host
+	// rather than leaving it stranded in the Pod namespace.
+	original := sysctlProvider
+	sysctlProvider = func() sysctl.Interface {
+		return &failingSetSysctl{
+			Fake:    sysctltesting.NewFake(),
+			setting: fmt.Sprintf("net/ipv4/conf/%s/arp_ignore", config.Name),
+		}
+	}
+	t.Cleanup(func() { sysctlProvider = original })
+
+	if _, err := nsAttachNetdev(ifaceName, path.Join("/run/netns", nsName), config); err == nil ||
+		!strings.Contains(err.Error(), "arp_ignore") {
+		t.Fatalf("nsAttachNetdev() error = %v, want an arp_ignore apply error", err)
+	}
+	returnedDev, err := nlwrap.LinkByName(ifaceName)
+	if err != nil {
+		t.Fatalf("network device was not returned to the host after the ARP apply error: %v", err)
+	}
+	if returnedDev.Attrs().Flags&net.FlagUp == 0 {
+		t.Error("network device was not brought up after the ARP apply error")
+	}
 }
