@@ -8,7 +8,16 @@ on:
       - "v*"
   pull_request:
     branches: [main]
+  schedule:
+    # Runs daily at 03:00 UTC
+    - cron: '0 3 * * *'
   workflow_dispatch:
+    inputs:
+      use_latest:
+        description: "Test against latest fast k8s CI build"
+        required: false
+        type: boolean
+        default: false
 
 env:
   GO_VERSION: "1.26"
@@ -59,6 +68,7 @@ jobs:
         env:
           BATS_LIB_PATH: ${{ steps.setup-bats.outputs.lib-path }}
           TERM: xterm
+          USE_LATEST: ${{ github.event_name == 'schedule' || inputs.use_latest == true }}
         run: bats -o _artifacts --print-output-on-failure tests/
 
       - name: Upload logs
