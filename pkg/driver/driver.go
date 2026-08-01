@@ -24,8 +24,8 @@ import (
 	"time"
 
 	"github.com/google/cel-go/cel"
-	"sigs.k8s.io/dranet/pkg/apis"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/dranet/pkg/apis"
 	"sigs.k8s.io/dranet/pkg/inventory"
 
 	"github.com/containerd/nri/pkg/stub"

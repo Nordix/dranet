@@ -49,7 +49,7 @@ const (
 var _ cloudprovider.CloudInstance = (*AlibabaInstance)(nil)
 
 type AlibabaInstance struct {
-	InstanceType     string
+	InstanceType      string
 	ERDMAPCIAddresses sets.Set[string]
 }
 
@@ -87,7 +87,7 @@ func GetInstance(ctx context.Context) (cloudprovider.CloudInstance, error) {
 	klog.Infof("Alibaba Cloud instance: type=%q erdma=%v", instanceType, erdmaPCIAddresses.UnsortedList())
 
 	return &AlibabaInstance{
-		InstanceType:     instanceType,
+		InstanceType:      instanceType,
 		ERDMAPCIAddresses: erdmaPCIAddresses,
 	}, nil
 }

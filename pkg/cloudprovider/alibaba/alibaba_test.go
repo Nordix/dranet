@@ -27,11 +27,11 @@ const testPCIAddress = "0000:00:0b.0"
 
 func TestGetDeviceAttributes(t *testing.T) {
 	tests := []struct {
-		name          string
-		instance      AlibabaInstance
-		id            cloudprovider.DeviceIdentifiers
-		wantInstType  string
-		wantERDMA     bool
+		name         string
+		instance     AlibabaInstance
+		id           cloudprovider.DeviceIdentifiers
+		wantInstType string
+		wantERDMA    bool
 	}{
 		{
 			name: "GPU instance with eRDMA, matching PCI address",

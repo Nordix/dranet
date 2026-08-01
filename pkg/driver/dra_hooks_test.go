@@ -904,7 +904,7 @@ func TestMergeDevices(t *testing.T) {
 			expected: []resourcev1.Device{pciDevSnapshot},
 		},
 		{
-			name:      "Live device attribute takes precedence over snapshot",
+			name: "Live device attribute takes precedence over snapshot",
 			live: []resourcev1.Device{{
 				Name: "0000:c0:14.0",
 				Attributes: map[resourcev1.QualifiedName]resourcev1.DeviceAttribute{
@@ -926,7 +926,7 @@ func TestMergeDevices(t *testing.T) {
 				},
 				Capacity: map[resourcev1.QualifiedName]resourcev1.DeviceCapacity{
 					"network-bandwidth": qtyCap("1G"),
-					"other-capacity":     qtyCap("50"),
+					"other-capacity":    qtyCap("50"),
 				},
 			}},
 			expected: []resourcev1.Device{{
@@ -939,7 +939,7 @@ func TestMergeDevices(t *testing.T) {
 				},
 				Capacity: map[resourcev1.QualifiedName]resourcev1.DeviceCapacity{
 					"network-bandwidth": qtyCap("10G"),
-					"other-capacity":     qtyCap("50"),
+					"other-capacity":    qtyCap("50"),
 				},
 			}},
 		},

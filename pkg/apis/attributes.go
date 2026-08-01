@@ -42,10 +42,10 @@ const (
 	AttrTCXProgramNames = AttrPrefix + "/" + "tcxProgramNames"
 	AttrEBPF            = AttrPrefix + "/" + "ebpf"
 	// PFs supporting SR-IOV are labeled with the attribute "sriov: true".
-	AttrSRIOV           = AttrPrefix + "/" + "sriov"
-	AttrSRIOVVfs        = AttrPrefix + "/" + "sriovVfs"
-	AttrIsSriovVf       = AttrPrefix + "/" + "isSriovVf"
-	AttrVirtual         = AttrPrefix + "/" + "virtual"
-	AttrRDMA            = AttrPrefix + "/" + "rdma"
-	AttrRDMADevice      = AttrPrefix + "/" + "rdmaDevice"
+	AttrSRIOV      = AttrPrefix + "/" + "sriov"
+	AttrSRIOVVfs   = AttrPrefix + "/" + "sriovVfs"
+	AttrIsSriovVf  = AttrPrefix + "/" + "isSriovVf"
+	AttrVirtual    = AttrPrefix + "/" + "virtual"
+	AttrRDMA       = AttrPrefix + "/" + "rdma"
+	AttrRDMADevice = AttrPrefix + "/" + "rdmaDevice"
 )
