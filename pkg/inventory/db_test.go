@@ -676,4 +676,51 @@ func TestAddRDMAAttributesStandalone(t *testing.T) {
 			t.Errorf("AttrRDMADevice = %v, want erdma_0 (should not be overwritten)", v)
 		}
 	})
+
+	t.Run("netdev-linked device uses existing AttrRDMADevice without lookup", func(t *testing.T) {
+		// A value already resolved elsewhere must be preserved: add*Attributes
+		// only fills missing attributes.
+		ifName := "dranettest1"
+		devices := []resourceapi.Device{
+			{
+				Name: ifName,
+				Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+					apis.AttrInterfaceName: {StringValue: ptr.To(ifName)},
+					apis.AttrRDMADevice:    {StringValue: ptr.To("bnxt_re12")},
+				},
+			},
+		}
+		db := &DB{}
+		result := db.addRDMAAttributes(devices)
+
+		if v, ok := result[0].Attributes[apis.AttrRDMA]; !ok || v.BoolValue == nil || !*v.BoolValue {
+			t.Errorf("AttrRDMA = %v, want true", v)
+		}
+		if v, ok := result[0].Attributes[apis.AttrRDMADevice]; !ok || v.StringValue == nil || *v.StringValue != "bnxt_re12" {
+			t.Errorf("AttrRDMADevice = %v, want bnxt_re12 (should not be overwritten)", v)
+		}
+	})
+
+	t.Run("netdev without RDMA device is rdma=false", func(t *testing.T) {
+		// A name that will not resolve via rdmamap or sysfs.
+		ifName := "dranet-nonexistent-iface"
+		devices := []resourceapi.Device{
+			{
+				Name: ifName,
+				Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+					apis.AttrInterfaceName: {StringValue: ptr.To(ifName)},
+					apis.AttrPCIAddress:    {StringValue: ptr.To("0000:1c:00.0")},
+				},
+			},
+		}
+		db := &DB{}
+		result := db.addRDMAAttributes(devices)
+
+		if v, ok := result[0].Attributes[apis.AttrRDMA]; !ok || v.BoolValue == nil || *v.BoolValue {
+			t.Errorf("AttrRDMA = %v, want false", v)
+		}
+		if _, ok := result[0].Attributes[apis.AttrRDMADevice]; ok {
+			t.Errorf("AttrRDMADevice should not be set for a non-RDMA netdev")
+		}
+	})
 }
