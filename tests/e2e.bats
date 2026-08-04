@@ -141,6 +141,23 @@ setup_tcx_filter() {
   assert_output --partial "169.254.169.13"
 }
 
+@test "validate per-interface ARP configuration on dummy interface" {
+  docker exec "$CLUSTER_NAME"-worker bash -c "ip link add dummy0 type dummy"
+  docker exec "$CLUSTER_NAME"-worker bash -c "ip link set up dev dummy0"
+
+  kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/deviceclass.yaml
+  kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/resourceclaim_arp.yaml
+  kubectl wait --for=condition=ready pod/pod-arp-test --timeout=30s
+
+  run kubectl exec pod-arp-test -- cat /proc/sys/net/ipv4/conf/dranet-arp/arp_ignore
+  assert_success
+  assert_output "1"
+
+  run kubectl exec pod-arp-test -- cat /proc/sys/net/ipv4/conf/dranet-arp/arp_announce
+  assert_success
+  assert_output "2"
+}
+
 @test "dummy interface with IP addresses ResourceClaimTemplate" {
   docker exec "$CLUSTER_NAME"-worker2 bash -c "ip link add dummy0 type dummy"
   docker exec "$CLUSTER_NAME"-worker2 bash -c "ip addr add 169.254.169.14/32 dev dummy0"
@@ -710,4 +727,3 @@ EOF
   kubectl patch daemonset dranet -n kube-system --type='json' -p="[{\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/args\", \"value\": $ORIGINAL_ARGS}]"
   kubectl rollout status -n kube-system daemonset/dranet --timeout=90s
 }
-
