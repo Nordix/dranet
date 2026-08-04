@@ -17,6 +17,7 @@ limitations under the License.
 package driver
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -36,11 +37,15 @@ import (
 // failingSetSysctl fails writes to a single setting and delegates the rest.
 type failingSetSysctl struct {
 	*sysctltesting.Fake
-	setting string
+	setting   string
+	onFailure func()
 }
 
 func (f *failingSetSysctl) SetSysctl(setting string, value int) error {
 	if setting == f.setting {
+		if f.onFailure != nil {
+			f.onFailure()
+		}
 		return errors.New("test set failure")
 	}
 	return f.Fake.SetSysctl(setting, value)
@@ -168,7 +173,11 @@ func TestApplyInterfaceARPConfigUsesOpenNamespace(t *testing.T) {
 	}
 	defer originalNs.Close()
 
-	nsName := fmt.Sprintf("arp-%d", os.Getpid())
+	rndString := make([]byte, 4)
+	if _, err := rand.Read(rndString); err != nil {
+		t.Fatalf("failed to generate random name: %v", err)
+	}
+	nsName := fmt.Sprintf("arp-%x", rndString)
 	targetNs, err := netns.NewNamed(nsName)
 	if err != nil {
 		t.Fatalf("failed to create network namespace: %v", err)

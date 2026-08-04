@@ -53,6 +53,7 @@ func Test_nhNetdev(t *testing.T) {
 		t.Errorf("fail to generate random name: %v", err)
 	}
 	nsName := fmt.Sprintf("ns%x", rndString)
+	containerNsPath := path.Join("/run/netns", nsName)
 	testNS, err := netns.NewNamed(nsName)
 	if err != nil {
 		t.Fatalf("Failed to create network namespace: %v", err)
@@ -111,7 +112,7 @@ func Test_nhNetdev(t *testing.T) {
 		ARPAnnounce:    ptr.To[int32](2),
 	}
 
-	deviceData, err := nsAttachNetdev(ifaceName, path.Join("/run/netns", nsName), config)
+	deviceData, err := nsAttachNetdev(ifaceName, containerNsPath, config)
 	if err != nil {
 		t.Fatalf("fail to attach netdev to namespace: %v", err)
 	}
@@ -203,25 +204,35 @@ func Test_nhNetdev(t *testing.T) {
 		}
 	}()
 
-	err = nsDetachNetdev(path.Join("/run/netns", nsName), config.Name, ifaceName)
+	err = nsDetachNetdev(containerNsPath, config.Name, ifaceName)
 	if err != nil {
 		t.Fatalf("failed to detach netdev from namespace: %v", err)
 	}
 
-	// A failure applying the ARP settings must return the device to the host
-	// rather than leaving it stranded in the Pod namespace.
+	// Delete the namespace path during the ARP failure to prove rollback uses
+	// the open namespace handle and returns the device to the host.
+	var deleteNamedErr error
 	original := sysctlProvider
 	sysctlProvider = func() sysctl.Interface {
 		return &failingSetSysctl{
 			Fake:    sysctltesting.NewFake(),
 			setting: fmt.Sprintf("net/ipv4/conf/%s/arp_ignore", config.Name),
+			onFailure: func() {
+				deleteNamedErr = netns.DeleteNamed(nsName)
+			},
 		}
 	}
 	t.Cleanup(func() { sysctlProvider = original })
 
-	if _, err := nsAttachNetdev(ifaceName, path.Join("/run/netns", nsName), config); err == nil ||
+	if _, err := nsAttachNetdev(ifaceName, containerNsPath, config); err == nil ||
 		!strings.Contains(err.Error(), "arp_ignore") {
 		t.Fatalf("nsAttachNetdev() error = %v, want an arp_ignore apply error", err)
+	}
+	if deleteNamedErr != nil {
+		t.Fatalf("failed to remove network namespace path during ARP failure: %v", deleteNamedErr)
+	}
+	if _, statErr := os.Stat(containerNsPath); !os.IsNotExist(statErr) {
+		t.Fatalf("network namespace path still exists after ARP failure: %v", statErr)
 	}
 	returnedDev, err := nlwrap.LinkByName(ifaceName)
 	if err != nil {
