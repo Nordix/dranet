@@ -86,16 +86,14 @@ type InterfaceConfig struct {
 	// This sets /proc/sys/net/ipv4/conf/<iface>/forwarding and the ipv6 counterpart.
 	Forwarding *bool `json:"forwarding,omitempty"`
 
-	// ARPIgnore sets which ARP requests the interface answers.
-	// This sets /proc/sys/net/ipv4/conf/<iface>/arp_ignore. Valid values are 0-8.
-	// The kernel resets this to the namespace default when the interface moves
-	// into the Pod, so it must be set explicitly to survive the move.
+	// ARPIgnore sets /proc/sys/net/ipv4/conf/<iface>/arp_ignore. Valid values are 0-3 and 8.
+	// Linux uses max(conf/all, conf/<iface>) as the effective value.
+	// Moving the interface resets it to the destination namespace default.
 	ARPIgnore *int32 `json:"arpIgnore,omitempty"`
 
-	// ARPAnnounce sets the source address the interface uses in ARP requests.
-	// This sets /proc/sys/net/ipv4/conf/<iface>/arp_announce. Valid values are 0-2.
-	// The kernel resets this to the namespace default when the interface moves
-	// into the Pod, so it must be set explicitly to survive the move.
+	// ARPAnnounce sets /proc/sys/net/ipv4/conf/<iface>/arp_announce. Valid values are 0-2.
+	// Linux uses max(conf/all, conf/<iface>) as the effective value.
+	// Moving the interface resets it to the destination namespace default.
 	ARPAnnounce *int32 `json:"arpAnnounce,omitempty"`
 
 	// VRF specifies the Virtual Routing and Forwarding domain this interface should belong to.
