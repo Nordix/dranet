@@ -57,7 +57,7 @@ func applyInterfaceARPWithSysctl(sysctlInterface sysctl.Interface, ifName string
 // Pod network namespace. These live under /proc/sys, so unlike the rest of the
 // interface configuration they cannot be set through a netlink handle and
 // require joining the namespace.
-func applyInterfaceARPConfig(containerNsPath string, ifName string, interfaceConfig apis.InterfaceConfig) error {
+func applyInterfaceARPConfig(containerNs netns.NsHandle, ifName string, interfaceConfig apis.InterfaceConfig) error {
 	if !hasARPConfig(interfaceConfig) {
 		return nil
 	}
@@ -79,15 +79,8 @@ func applyInterfaceARPConfig(containerNsPath string, ifName string, interfaceCon
 		}
 		defer originalNs.Close()
 
-		containerNs, err := netns.GetFromPath(containerNsPath)
-		if err != nil {
-			result <- fmt.Errorf("could not get network namespace from path %s: %w", containerNsPath, err)
-			return
-		}
-		defer containerNs.Close()
-
 		if err := netns.Set(containerNs); err != nil {
-			result <- fmt.Errorf("failed to join network namespace %s: %w", containerNsPath, err)
+			result <- fmt.Errorf("failed to join target network namespace: %w", err)
 			return
 		}
 

@@ -138,8 +138,8 @@ func nsAttachNetdev(hostIfName string, containerNsPAth string, interfaceConfig a
 	}
 
 	// Apply before the link comes up so it never answers ARP with the wrong policy.
-	if err := applyInterfaceARPConfig(containerNsPAth, ifName, interfaceConfig); err != nil {
-		rollbackErr := nsDetachNetdev(containerNsPAth, ifName, hostIfName)
+	if err := applyInterfaceARPConfig(containerNs, ifName, interfaceConfig); err != nil {
+		rollbackErr := nsDetachNetdevFromNS(containerNs, containerNsPAth, ifName, hostIfName)
 		return nil, fmt.Errorf("failed to apply ARP configuration to interface %s in namespace %s: %w", ifName, containerNsPAth, errors.Join(err, rollbackErr))
 	}
 
@@ -175,6 +175,10 @@ func nsDetachNetdev(containerNsPAth string, devName string, outName string) erro
 		return fmt.Errorf("could not get network namespace from path %s for network device %s : %w", containerNsPAth, devName, err)
 	}
 	defer containerNs.Close()
+	return nsDetachNetdevFromNS(containerNs, containerNsPAth, devName, outName)
+}
+
+func nsDetachNetdevFromNS(containerNs netns.NsHandle, containerNsPath string, devName string, outName string) error {
 	// to avoid golang problem with goroutines we create the socket in the
 	// namespace and use it directly
 	nhNs, err := nlwrap.NewHandleAt(containerNs)
@@ -185,7 +189,7 @@ func nsDetachNetdev(containerNsPAth string, devName string, outName string) erro
 
 	nsLink, err := nhNs.LinkByName(devName)
 	if err != nil {
-		return fmt.Errorf("link not found for interface %s on namespace %s: %w", devName, containerNsPAth, err)
+		return fmt.Errorf("link not found for interface %s on namespace %s: %w", devName, containerNsPath, err)
 	}
 
 	// set the device down to avoid network conflicts

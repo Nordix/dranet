@@ -231,3 +231,68 @@ func Test_nhNetdev(t *testing.T) {
 		t.Error("network device was not brought up after the ARP apply error")
 	}
 }
+
+func Test_nsDetachNetdevFromNSUsesOpenNamespace(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("Test requires root privileges.")
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	originalNs, err := netns.Get()
+	if err != nil {
+		t.Fatalf("failed to get current network namespace: %v", err)
+	}
+	defer originalNs.Close()
+
+	rndString := make([]byte, 4)
+	if _, err := rand.Read(rndString); err != nil {
+		t.Fatalf("failed to generate random name: %v", err)
+	}
+	nsName := fmt.Sprintf("ns%x", rndString)
+	targetNs, err := netns.NewNamed(nsName)
+	if err != nil {
+		t.Fatalf("failed to create network namespace: %v", err)
+	}
+	defer targetNs.Close()
+	defer func() { _ = netns.DeleteNamed(nsName) }()
+
+	if err := netns.Set(originalNs); err != nil {
+		t.Fatalf("failed to restore original network namespace: %v", err)
+	}
+
+	ifaceName := fmt.Sprintf("td%x", rndString)
+	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: ifaceName}}
+	if err := netlink.LinkAdd(link); err != nil {
+		t.Fatalf("failed to add dummy link: %v", err)
+	}
+	t.Cleanup(func() {
+		link, err := nlwrap.LinkByName(ifaceName)
+		if err == nil {
+			_ = netlink.LinkDel(link)
+		}
+	})
+	if err := netlink.LinkSetUp(link); err != nil {
+		t.Fatalf("failed to bring dummy link up: %v", err)
+	}
+
+	containerNsPath := path.Join("/run/netns", nsName)
+	if _, err := nsAttachNetdev(ifaceName, containerNsPath, apis.InterfaceConfig{Name: "dranet0"}); err != nil {
+		t.Fatalf("failed to attach dummy link: %v", err)
+	}
+	if err := netns.DeleteNamed(nsName); err != nil {
+		t.Fatalf("failed to remove network namespace path: %v", err)
+	}
+	if err := nsDetachNetdevFromNS(targetNs, containerNsPath, "dranet0", ifaceName); err != nil {
+		t.Fatalf("failed to detach with open namespace handle: %v", err)
+	}
+
+	returnedDev, err := nlwrap.LinkByName(ifaceName)
+	if err != nil {
+		t.Fatalf("network device was not returned to the host: %v", err)
+	}
+	if returnedDev.Attrs().Flags&net.FlagUp == 0 {
+		t.Error("network device was not brought up after detach")
+	}
+}

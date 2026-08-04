@@ -18,10 +18,15 @@ package driver
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/vishvananda/netns"
+	"k8s.io/component-helpers/node/util/sysctl"
 	sysctltesting "k8s.io/component-helpers/node/util/sysctl/testing"
 	"k8s.io/utils/ptr"
 
@@ -144,9 +149,57 @@ func TestApplyInterfaceARPWithSysctlReturnsSetErrors(t *testing.T) {
 }
 
 func TestApplyInterfaceARPConfigNoConfigDoesNotEnterNamespace(t *testing.T) {
-	// An empty config must return before touching the namespace path, so a
-	// path that cannot be opened is still not an error.
-	if err := applyInterfaceARPConfig("/nonexistent/netns", "rdma0", apis.InterfaceConfig{Name: "rdma0"}); err != nil {
+	if err := applyInterfaceARPConfig(netns.None(), "rdma0", apis.InterfaceConfig{Name: "rdma0"}); err != nil {
 		t.Fatalf("applyInterfaceARPConfig() error: %v", err)
+	}
+}
+
+func TestApplyInterfaceARPConfigUsesOpenNamespace(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("Test requires root privileges.")
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	originalNs, err := netns.Get()
+	if err != nil {
+		t.Fatalf("failed to get current network namespace: %v", err)
+	}
+	defer originalNs.Close()
+
+	nsName := fmt.Sprintf("arp-%d", os.Getpid())
+	targetNs, err := netns.NewNamed(nsName)
+	if err != nil {
+		t.Fatalf("failed to create network namespace: %v", err)
+	}
+	defer targetNs.Close()
+	defer func() { _ = netns.DeleteNamed(nsName) }()
+
+	if err := netns.Set(originalNs); err != nil {
+		t.Fatalf("failed to restore original network namespace: %v", err)
+	}
+	if err := netns.DeleteNamed(nsName); err != nil {
+		t.Fatalf("failed to remove network namespace path: %v", err)
+	}
+
+	config := apis.InterfaceConfig{ARPIgnore: ptr.To[int32](1)}
+	if err := applyInterfaceARPConfig(targetNs, "lo", config); err != nil {
+		t.Fatalf("applyInterfaceARPConfig() with an open namespace handle failed: %v", err)
+	}
+
+	if err := netns.Set(targetNs); err != nil {
+		t.Fatalf("failed to enter target network namespace: %v", err)
+	}
+	got, readErr := sysctl.New().GetSysctl("net/ipv4/conf/lo/arp_ignore")
+	restoreErr := netns.Set(originalNs)
+	if readErr != nil {
+		t.Fatalf("failed to read arp_ignore: %v", readErr)
+	}
+	if restoreErr != nil {
+		t.Fatalf("failed to restore original network namespace: %v", restoreErr)
+	}
+	if got != 1 {
+		t.Errorf("arp_ignore = %d, want 1", got)
 	}
 }
