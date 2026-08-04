@@ -231,8 +231,10 @@ func Test_nhNetdev(t *testing.T) {
 	if deleteNamedErr != nil {
 		t.Fatalf("failed to remove network namespace path during ARP failure: %v", deleteNamedErr)
 	}
-	if _, statErr := os.Stat(containerNsPath); !os.IsNotExist(statErr) {
-		t.Fatalf("network namespace path still exists after ARP failure: %v", statErr)
+	if _, statErr := os.Stat(containerNsPath); statErr == nil {
+		t.Fatal("network namespace path still exists after ARP failure")
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("failed to check network namespace path after ARP failure: %v", statErr)
 	}
 	returnedDev, err := nlwrap.LinkByName(ifaceName)
 	if err != nil {

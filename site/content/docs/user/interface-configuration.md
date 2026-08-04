@@ -65,12 +65,18 @@ type InterfaceConfig struct {
 	// Managed by `ip link set <dev> gro_ipv4_max_size <val>`. For enabling Big TCP.
 	GROIPv4MaxSize *int32 `json:"groIPv4MaxSize,omitempty"`
 
-	// ARPIgnore sets /proc/sys/net/ipv4/conf/<iface>/arp_ignore. Valid values are 0-3 and 8.
+	// ARPIgnore controls which ARP requests the interface answers through
+	// /proc/sys/net/ipv4/conf/<iface>/arp_ignore. Valid values are 0-3 and 8.
 	// Linux uses max(conf/all, conf/<iface>) as the effective value.
+	// Moving the interface resets it to the destination namespace default, so it
+	// must be requested explicitly.
 	ARPIgnore *int32 `json:"arpIgnore,omitempty"`
 
-	// ARPAnnounce sets /proc/sys/net/ipv4/conf/<iface>/arp_announce. Valid values are 0-2.
+	// ARPAnnounce controls the source address used in ARP requests through
+	// /proc/sys/net/ipv4/conf/<iface>/arp_announce. Valid values are 0-2.
 	// Linux uses max(conf/all, conf/<iface>) as the effective value.
+	// Moving the interface resets it to the destination namespace default, so it
+	// must be requested explicitly.
 	ARPAnnounce *int32 `json:"arpAnnounce,omitempty"`
 }
 ```
