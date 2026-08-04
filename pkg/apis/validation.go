@@ -177,9 +177,8 @@ func validateInterfaceConfig(cfg *InterfaceConfig, fieldPath string) (allErrors 
 		allErrors = append(allErrors, fmt.Errorf("%s.grov4MaxSize: must be positive, got %d", fieldPath, *cfg.GROIPv4MaxSize))
 	}
 
-	// Ranges are the ones documented in the kernel ip-sysctl reference.
-	if cfg.ARPIgnore != nil && (*cfg.ARPIgnore < 0 || *cfg.ARPIgnore > 8) {
-		allErrors = append(allErrors, fmt.Errorf("%s.arpIgnore: must be between 0 and 8, got %d", fieldPath, *cfg.ARPIgnore))
+	if cfg.ARPIgnore != nil && (*cfg.ARPIgnore < 0 || (*cfg.ARPIgnore > 3 && *cfg.ARPIgnore != 8)) {
+		allErrors = append(allErrors, fmt.Errorf("%s.arpIgnore: must be one of 0, 1, 2, 3, or 8, got %d", fieldPath, *cfg.ARPIgnore))
 	}
 
 	if cfg.ARPAnnounce != nil && (*cfg.ARPAnnounce < 0 || *cfg.ARPAnnounce > 2) {
