@@ -532,14 +532,19 @@ func (db *DB) getProviderAttributes(device *resourceapi.Device, instance cloudpr
 		return nil
 	}
 
-	id := cloudprovider.DeviceIdentifiers{
-		Name: device.Name,
+	id := cloudprovider.DeviceIdentifiers{}
+	if ifaceNameAttr, ok := device.Attributes[apis.AttrInterfaceName]; ok && ifaceNameAttr.StringValue != nil {
+		id.Name = *ifaceNameAttr.StringValue
 	}
 	if macAttr, ok := device.Attributes[apis.AttrMac]; ok && macAttr.StringValue != nil {
 		id.MAC = *macAttr.StringValue
 	}
 	if pciAttr, ok := device.Attributes[apis.AttrPCIAddress]; ok && pciAttr.StringValue != nil {
 		id.PCIAddress = *pciAttr.StringValue
+	}
+	if id.Name == "" && id.MAC == "" && id.PCIAddress == "" {
+		klog.Warningf("device %s has no identifiers, cannot get provider attributes.", device.Name)
+		return nil
 	}
 
 	return instance.GetDeviceAttributes(id)
