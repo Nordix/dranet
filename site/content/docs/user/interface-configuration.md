@@ -64,6 +64,20 @@ type InterfaceConfig struct {
 	// GROv4MaxSize sets the maximum Generic Receive Offload size.
 	// Managed by `ip link set <dev> gro_ipv4_max_size <val>`. For enabling Big TCP.
 	GROIPv4MaxSize *int32 `json:"groIPv4MaxSize,omitempty"`
+
+	// ARPIgnore controls which ARP requests the interface answers through
+	// /proc/sys/net/ipv4/conf/<iface>/arp_ignore. Valid values are 0-3 and 8.
+	// Linux uses max(conf/all, conf/<iface>) as the effective value.
+	// Moving the interface resets it to the destination namespace default, so it
+	// must be requested explicitly.
+	ARPIgnore *int32 `json:"arpIgnore,omitempty"`
+
+	// ARPAnnounce controls the source address used in ARP requests through
+	// /proc/sys/net/ipv4/conf/<iface>/arp_announce. Valid values are 0-2.
+	// Linux uses max(conf/all, conf/<iface>) as the effective value.
+	// Moving the interface resets it to the destination namespace default, so it
+	// must be requested explicitly.
+	ARPAnnounce *int32 `json:"arpAnnounce,omitempty"`
 }
 ```
 
@@ -75,6 +89,21 @@ type InterfaceConfig struct {
 * **groMaxSize** (int32, optional): The maximum Generic Receive Offload size for IPv6.
 * **gsoIPv4MaxSize** (int32, optional): The maximum Generic Segmentation Offload size for IPv4.
 * **groIPv4MaxSize** (int32, optional): The maximum Generic Receive Offload size for IPv4.
+* **arpIgnore** (int32, optional): Which ARP requests the interface answers. Valid values are 0, 1, 2, 3, and 8. Sets `/proc/sys/net/ipv4/conf/<iface>/arp_ignore`.
+* **arpAnnounce** (int32, optional): The source address the interface uses in ARP requests, from 0 to 2. Sets `/proc/sys/net/ipv4/conf/<iface>/arp_announce`.
+
+The kernel resets both ARP settings to the network namespace default when an interface
+moves into a Pod, so a value configured on the host does not survive the move and has to
+be requested here. Setups that attach several interfaces sharing one IP subnet, such as
+multi-NIC RDMA nodes, typically need `arpIgnore: 1` and `arpAnnounce: 2`. Without them an
+interface can answer ARP for another interface's address, or send requests with a source
+address from the wrong subnet, which makes neighbor resolution pick the wrong link.
+
+Linux uses the maximum of the namespace-wide `conf/all` value and the per-interface value
+for both settings. A per-interface setting cannot reduce the effective value below
+`conf/all`. New IPv4 network namespaces normally inherit `conf/all` and `conf/default`
+from the initial network namespace, subject to `net.core.devconf_inherit_init_net`.
+DRANET only changes the per-interface value.
 
 #### Route Configuration (RouteConfig)
 

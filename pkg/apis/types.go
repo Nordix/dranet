@@ -86,6 +86,20 @@ type InterfaceConfig struct {
 	// This sets /proc/sys/net/ipv4/conf/<iface>/forwarding and the ipv6 counterpart.
 	Forwarding *bool `json:"forwarding,omitempty"`
 
+	// ARPIgnore controls which ARP requests the interface answers through
+	// /proc/sys/net/ipv4/conf/<iface>/arp_ignore. Valid values are 0-3 and 8.
+	// Linux uses max(conf/all, conf/<iface>) as the effective value.
+	// Moving the interface resets it to the destination namespace default, so it
+	// must be requested explicitly.
+	ARPIgnore *int32 `json:"arpIgnore,omitempty"`
+
+	// ARPAnnounce controls the source address used in ARP requests through
+	// /proc/sys/net/ipv4/conf/<iface>/arp_announce. Valid values are 0-2.
+	// Linux uses max(conf/all, conf/<iface>) as the effective value.
+	// Moving the interface resets it to the destination namespace default, so it
+	// must be requested explicitly.
+	ARPAnnounce *int32 `json:"arpAnnounce,omitempty"`
+
 	// VRF specifies the Virtual Routing and Forwarding domain this interface should belong to.
 	// If provided, the interface will be enslaved to a VRF device with this name.
 	// This enables grouping multiple network interfaces into the same VRF.

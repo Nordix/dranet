@@ -19,6 +19,7 @@ package driver
 import (
 	"crypto/rand"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path"
@@ -28,6 +29,8 @@ import (
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
+	"k8s.io/component-helpers/node/util/sysctl"
+	sysctltesting "k8s.io/component-helpers/node/util/sysctl/testing"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/dranet/internal/nlwrap"
 	"sigs.k8s.io/dranet/pkg/apis"
@@ -50,6 +53,7 @@ func Test_nhNetdev(t *testing.T) {
 		t.Errorf("fail to generate random name: %v", err)
 	}
 	nsName := fmt.Sprintf("ns%x", rndString)
+	containerNsPath := path.Join("/run/netns", nsName)
 	testNS, err := netns.NewNamed(nsName)
 	if err != nil {
 		t.Fatalf("Failed to create network namespace: %v", err)
@@ -104,9 +108,11 @@ func Test_nhNetdev(t *testing.T) {
 		GROMaxSize:     ptr.To[int32](1025),
 		GSOIPv4MaxSize: ptr.To[int32](1026),
 		GROIPv4MaxSize: ptr.To[int32](1027),
+		ARPIgnore:      ptr.To[int32](1),
+		ARPAnnounce:    ptr.To[int32](2),
 	}
 
-	deviceData, err := nsAttachNetdev(ifaceName, path.Join("/run/netns", nsName), config)
+	deviceData, err := nsAttachNetdev(ifaceName, containerNsPath, config)
 	if err != nil {
 		t.Fatalf("fail to attach netdev to namespace: %v", err)
 	}
@@ -153,6 +159,31 @@ func Test_nhNetdev(t *testing.T) {
 			t.Errorf("HardwareAddr not reported")
 		}
 
+		// lo is the control: it shares the namespace but has no config, so it
+		// shows the namespace default the moved interface would have kept.
+		for _, tc := range []struct {
+			setting string
+			want    int
+		}{
+			{"arp_ignore", int(*config.ARPIgnore)},
+			{"arp_announce", int(*config.ARPAnnounce)},
+		} {
+			got, err := sysctl.New().GetSysctl(fmt.Sprintf("net/ipv4/conf/%s/%s", config.Name, tc.setting))
+			if err != nil {
+				t.Fatalf("failed to read %s in pod namespace: %v", tc.setting, err)
+			}
+			if got != tc.want {
+				t.Errorf("%s = %d, want %d", tc.setting, got, tc.want)
+			}
+			baseline, err := sysctl.New().GetSysctl(fmt.Sprintf("net/ipv4/conf/lo/%s", tc.setting))
+			if err != nil {
+				t.Fatalf("failed to read baseline %s in pod namespace: %v", tc.setting, err)
+			}
+			if baseline == tc.want {
+				t.Errorf("%s baseline is already %d, the test cannot prove the config was applied", tc.setting, baseline)
+			}
+		}
+
 		cmd = exec.Command("ip", "addr", "show", config.Name)
 		output, err = cmd.CombinedOutput()
 		if err != nil {
@@ -173,9 +204,108 @@ func Test_nhNetdev(t *testing.T) {
 		}
 	}()
 
-	err = nsDetachNetdev(path.Join("/run/netns", nsName), config.Name, ifaceName)
+	err = nsDetachNetdev(containerNsPath, config.Name, ifaceName)
 	if err != nil {
-		t.Fatalf("fail to attach netdev to namespace: %v", err)
+		t.Fatalf("failed to detach netdev from namespace: %v", err)
 	}
 
+	// Delete the namespace path during the ARP failure to prove rollback uses
+	// the open namespace handle and returns the device to the host.
+	var deleteNamedErr error
+	original := sysctlProvider
+	sysctlProvider = func() sysctl.Interface {
+		return &failingSetSysctl{
+			Fake:    sysctltesting.NewFake(),
+			setting: fmt.Sprintf("net/ipv4/conf/%s/arp_ignore", config.Name),
+			onFailure: func() {
+				deleteNamedErr = netns.DeleteNamed(nsName)
+			},
+		}
+	}
+	t.Cleanup(func() { sysctlProvider = original })
+
+	if _, err := nsAttachNetdev(ifaceName, containerNsPath, config); err == nil ||
+		!strings.Contains(err.Error(), "arp_ignore") {
+		t.Fatalf("nsAttachNetdev() error = %v, want an arp_ignore apply error", err)
+	}
+	if deleteNamedErr != nil {
+		t.Fatalf("failed to remove network namespace path during ARP failure: %v", deleteNamedErr)
+	}
+	if _, statErr := os.Stat(containerNsPath); statErr == nil {
+		t.Fatal("network namespace path still exists after ARP failure")
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("failed to check network namespace path after ARP failure: %v", statErr)
+	}
+	returnedDev, err := nlwrap.LinkByName(ifaceName)
+	if err != nil {
+		t.Fatalf("network device was not returned to the host after the ARP apply error: %v", err)
+	}
+	if returnedDev.Attrs().Flags&net.FlagUp == 0 {
+		t.Error("network device was not brought up after the ARP apply error")
+	}
+}
+
+func Test_nsDetachNetdevFromNSUsesOpenNamespace(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("Test requires root privileges.")
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	originalNs, err := netns.Get()
+	if err != nil {
+		t.Fatalf("failed to get current network namespace: %v", err)
+	}
+	defer originalNs.Close()
+
+	rndString := make([]byte, 4)
+	if _, err := rand.Read(rndString); err != nil {
+		t.Fatalf("failed to generate random name: %v", err)
+	}
+	nsName := fmt.Sprintf("ns%x", rndString)
+	targetNs, err := netns.NewNamed(nsName)
+	if err != nil {
+		t.Fatalf("failed to create network namespace: %v", err)
+	}
+	defer targetNs.Close()
+	defer func() { _ = netns.DeleteNamed(nsName) }()
+
+	if err := netns.Set(originalNs); err != nil {
+		t.Fatalf("failed to restore original network namespace: %v", err)
+	}
+
+	ifaceName := fmt.Sprintf("td%x", rndString)
+	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: ifaceName}}
+	if err := netlink.LinkAdd(link); err != nil {
+		t.Fatalf("failed to add dummy link: %v", err)
+	}
+	t.Cleanup(func() {
+		link, err := nlwrap.LinkByName(ifaceName)
+		if err == nil {
+			_ = netlink.LinkDel(link)
+		}
+	})
+	if err := netlink.LinkSetUp(link); err != nil {
+		t.Fatalf("failed to bring dummy link up: %v", err)
+	}
+
+	containerNsPath := path.Join("/run/netns", nsName)
+	if _, err := nsAttachNetdev(ifaceName, containerNsPath, apis.InterfaceConfig{Name: "dranet0"}); err != nil {
+		t.Fatalf("failed to attach dummy link: %v", err)
+	}
+	if err := netns.DeleteNamed(nsName); err != nil {
+		t.Fatalf("failed to remove network namespace path: %v", err)
+	}
+	if err := nsDetachNetdevFromNS(targetNs, containerNsPath, "dranet0", ifaceName); err != nil {
+		t.Fatalf("failed to detach with open namespace handle: %v", err)
+	}
+
+	returnedDev, err := nlwrap.LinkByName(ifaceName)
+	if err != nil {
+		t.Fatalf("network device was not returned to the host: %v", err)
+	}
+	if returnedDev.Attrs().Flags&net.FlagUp == 0 {
+		t.Error("network device was not brought up after detach")
+	}
 }
