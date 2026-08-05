@@ -255,5 +255,3 @@ func (p *WebhookProvider) ReleaseProfileConfig(id cloudprovider.DeviceIdentifier
 
 	return p.post(PathReleaseProfileConfig, req, nil)
 }
-
-

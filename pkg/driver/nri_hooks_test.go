@@ -189,7 +189,6 @@ func TestRunPodSandboxUsesPersistedConfigAfterRestart(t *testing.T) {
 	}
 }
 
-
 func TestSynchronizeStoresNetNSOnlyForConfiguredPods(t *testing.T) {
 	store := mustNewPodConfigStore()
 

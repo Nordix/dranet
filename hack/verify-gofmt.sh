@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 # Copyright The Kubernetes Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,33 +13,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-name: Test
 
-on:
-  push:
-    branches:
-      - 'main'
-    tags:
-      - 'v*'
-  pull_request:
-    branches: [ main ]
+set -o errexit
+set -o nounset
+set -o pipefail
 
-permissions:
-  contents: read
+REPO_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
+cd "${REPO_ROOT}"
 
-jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        go-version: [1.26.x]
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-      with:
-        go-version: ${{ matrix.go-version }}
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-    - run: sudo make test
-    - run: make lint
-    - run: make verify
-
+echo "Checking gofmt..."
+unformatted=$(find . -name '*.go' -not -path './vendor*' -not -path './third_party*' -exec gofmt -l {} +)
+if [ -n "${unformatted}" ]; then
+  echo "The following files are not formatted:"
+  echo "${unformatted}"
+  echo "Please run 'make fmt' or 'gofmt -s -w .'"
+  exit 1
+fi

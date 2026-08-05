@@ -46,13 +46,13 @@ func (m *fakePluginHelper) RegistrationStatus() *registerapi.RegistrationStatus 
 
 // mockNetDB is a mock implementation of the inventoryDB interface for testing.
 type fakeInventoryDB struct {
-	resources           chan []resourcev1.Device
-	rescanCalls         atomic.Int32
-	GetDeviceFunc       func(deviceName string) (resourcev1.Device, bool)
-	GetDeviceConfigFunc func(deviceName string) (*apis.NetworkConfig, bool)
-	GetNetInterfaceNameFunc func(deviceName string) (string, error)
-	IsIBOnlyDeviceFunc      func(deviceName string) bool
-	GetProfileConfigFunc    func(deviceName string, claimUID types.UID, config *apis.NetworkConfig) (*apis.NetworkConfig, error)
+	resources                chan []resourcev1.Device
+	rescanCalls              atomic.Int32
+	GetDeviceFunc            func(deviceName string) (resourcev1.Device, bool)
+	GetDeviceConfigFunc      func(deviceName string) (*apis.NetworkConfig, bool)
+	GetNetInterfaceNameFunc  func(deviceName string) (string, error)
+	IsIBOnlyDeviceFunc       func(deviceName string) bool
+	GetProfileConfigFunc     func(deviceName string, claimUID types.UID, config *apis.NetworkConfig) (*apis.NetworkConfig, error)
 	ReleaseProfileConfigFunc func(deviceName string, claimUID types.UID, config *apis.NetworkConfig) error
 }
 

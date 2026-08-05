@@ -28,9 +28,9 @@ import (
 
 // TestSetupProviders tests the initialization behavior of the dranet providers.
 // We avoid testing actual cloud providers (like GCE, AWS, Azure, OKE) here because
-// their discovery functions poll real metadata servers. Running these tests on a VM 
+// their discovery functions poll real metadata servers. Running these tests on a VM
 // in one of those clouds would generate false positives or unpredictable behavior.
-// Instead, we use the webhook provider to inject our own local mock server, allowing 
+// Instead, we use the webhook provider to inject our own local mock server, allowing
 // us to assert the business logic consistently.
 func TestSetupProviders(t *testing.T) {
 	ctx := context.Background()

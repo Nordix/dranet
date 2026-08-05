@@ -51,6 +51,20 @@ helm-lint:
 update:
 	go mod tidy
 
+.PHONY: fmt
+fmt:
+	@find . -name '*.go' -not -path './vendor*' -not -path './third_party*' -exec gofmt -s -w {} +
+
+.PHONY: verify verify-gofmt verify-go-mod
+verify:
+	hack/verify-all.sh
+
+verify-gofmt:
+	hack/verify-gofmt.sh
+
+verify-go-mod:
+	hack/verify-go-mod.sh
+
 .PHONY: ensure-buildx
 ensure-buildx:
 	./hack/init-buildx.sh

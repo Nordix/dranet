@@ -391,4 +391,3 @@ func TestPodConfigStore_NoCheckpointer(t *testing.T) {
 		t.Errorf("Close() error: %v", err)
 	}
 }
-

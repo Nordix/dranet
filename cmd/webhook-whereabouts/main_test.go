@@ -42,7 +42,7 @@ func TestCniIfname(t *testing.T) {
 		{
 			name:    "non-PCI over-length name falls back to deterministic hash",
 			devName: "net-aaaaaaaaaaaaaaaaaaaa", // base32-style, no "pci-" prefix
-			want:    "",                          // opaque hash; checked via invariants
+			want:    "",                         // opaque hash; checked via invariants
 		},
 		{
 			// Standard Linux PCI addresses never reach this, but a hypothetical
@@ -50,7 +50,7 @@ func TestCniIfname(t *testing.T) {
 			// correct by degrading to the hash rather than emitting a long name.
 			name:    "over-length PCI name still degrades to hash, not an invalid name",
 			devName: "pci-00000000-27-00-2", // >15 even after "pci-" is stripped
-			want:    "",                      // opaque hash; checked via invariants
+			want:    "",                     // opaque hash; checked via invariants
 		},
 	}
 
@@ -110,7 +110,7 @@ func TestIsValidCNIIfname(t *testing.T) {
 		want bool
 	}{
 		{"eth0", true},
-		{"abcdefghijklmno", true},  // 15 chars
+		{"abcdefghijklmno", true},   // 15 chars
 		{"abcdefghijklmnop", false}, // 16 chars
 		{"", false},
 		{".", false},

@@ -35,8 +35,8 @@ import (
 //	        └── device_configs (nested bucket for device configs)
 //	              └── <deviceName> = <JSON-encoded DeviceConfig>
 var (
-	podConfigsBucket   = []byte("pod_configs")
-	deviceConfigsKey   = []byte("device_configs")
+	podConfigsBucket = []byte("pod_configs")
+	deviceConfigsKey = []byte("device_configs")
 )
 
 // boltCheckpointer implements Checkpointer backed by bbolt.

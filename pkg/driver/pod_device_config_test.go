@@ -446,7 +446,7 @@ func TestPodConfigStore_GetAllocatedDeviceSnapshots(t *testing.T) {
 		},
 	}
 	err = store.SetDeviceConfig(podUID2, "0000:c0:14.0", DeviceConfig{
-		Claim:  types.NamespacedName{Namespace: "default", Name: "claim-2"},
+		Claim:          types.NamespacedName{Namespace: "default", Name: "claim-2"},
 		DeviceSnapshot: &snapDev,
 	})
 	if err != nil {
