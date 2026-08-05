@@ -105,6 +105,19 @@ setup_tcx_filter() {
   docker exec "$CLUSTER_NAME"-worker2 bash -c "ip link set up dev dummy0"
 }
 
+# wait_for_ready_pods waits for the pods matching a label selector to first be
+# created and then become ready. The `--for=create` step is required because
+# `kubectl wait --for=condition=ready` does not wait for the object to exist: if
+# the workload's controller (e.g. a ReplicaSet) has not created the Pod objects
+# yet, the selector matches nothing and the command fails immediately with
+# "error: no matching resources found" instead of waiting.
+wait_for_ready_pods() {
+  local selector="$1"
+  local timeout="${2:-30s}"
+  kubectl wait --timeout="$timeout" --for=create pods -l "$selector"
+  kubectl wait --timeout="$timeout" --for=condition=ready pods -l "$selector"
+}
+
 # ---- TESTS ----
 
 @test "dummy interface with IP addresses ResourceClaim" {
@@ -113,7 +126,7 @@ setup_tcx_filter() {
 
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/deviceclass.yaml
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/resourceclaim.yaml
-  kubectl wait --timeout=30s --for=condition=ready pods -l app=pod
+  wait_for_ready_pods app=pod 30s
 
   run kubectl exec pod1 -- ip addr show eth99
   assert_success
@@ -130,7 +143,7 @@ setup_tcx_filter() {
 
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/deviceclass.yaml
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/resourceclaim.yaml
-  kubectl wait --timeout=30s --for=condition=ready pods -l app=pod
+  wait_for_ready_pods app=pod 30s
 
   run kubectl exec pod1 -- ip addr show eth99
   assert_success
@@ -146,7 +159,7 @@ setup_tcx_filter() {
   docker exec "$CLUSTER_NAME"-worker2 bash -c "ip addr add 169.254.169.14/32 dev dummy0"
 
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/resourceclaimtemplate.yaml
-  kubectl wait --timeout=30s --for=condition=ready pods -l app=MyApp
+  wait_for_ready_pods app=MyApp 30s
   POD_NAME=$(kubectl get pods -l app=MyApp -o name)
   run kubectl exec $POD_NAME -- ip addr show dummy0
   assert_success
@@ -163,7 +176,7 @@ setup_tcx_filter() {
 
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/deviceclass.yaml
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/resourceclaim_route.yaml
-  kubectl wait --timeout=30s --for=condition=ready pods -l app=pod
+  wait_for_ready_pods app=pod 30s
 
   run kubectl exec pod3 -- ip addr show eth99
   assert_success
@@ -323,7 +336,7 @@ setup_tcx_filter() {
 
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/deviceclass.yaml
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/resourceclaimtemplate_double.yaml
-  kubectl wait --timeout=30s --for=condition=ready pods -l app=MyApp
+  wait_for_ready_pods app=MyApp 30s
   POD_NAME=$(kubectl get pods -l app=MyApp -o name)
   run kubectl exec $POD_NAME -- ip addr show dummy0
   assert_success
@@ -344,7 +357,7 @@ setup_tcx_filter() {
 
   # Apply the resource claim template and deployment
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/repeatresourceclaimtemplate.yaml
-  kubectl wait --timeout=30s --for=condition=ready pods -l app=reapplyApp
+  wait_for_ready_pods app=reapplyApp 30s
   POD_NAME=$(kubectl get pods -l app=reapplyApp -o name)
   run kubectl exec $POD_NAME -- ip addr show dummy8
   assert_success
@@ -364,7 +377,7 @@ setup_tcx_filter() {
 
   # Reapply the deployment, should reclaim the device
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/repeatresourceclaimtemplate.yaml
-  kubectl wait --timeout=30s --for=condition=ready pods -l app=reapplyApp
+  wait_for_ready_pods app=reapplyApp 30s
   POD_NAME=$(kubectl get pods -l app=reapplyApp -o name)
   run kubectl exec $POD_NAME -- ip addr show dummy8
   assert_success
@@ -434,7 +447,7 @@ EOF
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/deviceclass.yaml
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/resourceclaim.yaml
   
-  kubectl wait --timeout=30s --for=condition=ready pods -l app=pod
+  wait_for_ready_pods app=pod 30s
 
   local POD_NAME
   POD_NAME=$(kubectl get pods -l app=pod -o name)
@@ -522,7 +535,7 @@ EOF
 
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/deviceclass.yaml
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/resourceclaim.yaml
-  kubectl wait --timeout=30s --for=condition=ready pods -l app=pod
+  wait_for_ready_pods app=pod 30s
 
   # Get the pod name
   POD_NAME=$(kubectl get pods -l app=pod -o name)
@@ -556,7 +569,7 @@ EOF
 
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/deviceclass.yaml
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/resourceclaim.yaml
-  kubectl wait --timeout=30s --for=condition=ready pods -l app=pod
+  wait_for_ready_pods app=pod 30s
 
   # Get the pod name
   POD_NAME=$(kubectl get pods -l app=pod -o name)
@@ -580,7 +593,7 @@ EOF
 
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/deviceclass.yaml
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/resourceclaim_ipv6_subnet.yaml
-  kubectl wait --timeout=30s --for=condition=ready pods -l app=pod-ipv6
+  wait_for_ready_pods app=pod-ipv6 30s
 
   POD_NAME=$(kubectl get pods -l app=pod-ipv6 -o name)
   run kubectl exec "$POD_NAME" -- ip -6 route show
@@ -607,9 +620,9 @@ EOF
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/deviceclass.yaml
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/resourceclaim_pbr.yaml
   
-  kubectl wait --timeout=60s --for=condition=ready pods -l app=pod-pbr-1
-  kubectl wait --timeout=60s --for=condition=ready pods -l app=pod-pbr-router
-  kubectl wait --timeout=60s --for=condition=ready pods -l app=pod-pbr-2
+  wait_for_ready_pods app=pod-pbr-1 60s
+  wait_for_ready_pods app=pod-pbr-router 60s
+  wait_for_ready_pods app=pod-pbr-2 60s
 
   POD_1=$(kubectl get pods -l app=pod-pbr-1 -o name)
   
@@ -643,9 +656,9 @@ EOF
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/deviceclass.yaml
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/resourceclaim_vrf.yaml
 
-  kubectl wait --timeout=60s --for=condition=ready pods -l app=pod-vrf-1
-  kubectl wait --timeout=60s --for=condition=ready pods -l app=pod-vrf-router
-  kubectl wait --timeout=60s --for=condition=ready pods -l app=pod-vrf-2
+  wait_for_ready_pods app=pod-vrf-1 60s
+  wait_for_ready_pods app=pod-vrf-router 60s
+  wait_for_ready_pods app=pod-vrf-2 60s
 
   POD_1=$(kubectl get pods -l app=pod-vrf-1 -o name)
   
@@ -686,7 +699,7 @@ EOF
   # 3. Apply the resource claim (allocating dummy0) and start the Pod
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/deviceclass.yaml
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/resourceclaim.yaml
-  kubectl wait --timeout=30s --for=condition=ready pods -l app=pod
+  wait_for_ready_pods app=pod 30s
 
   # 4. Verify that the allocated dummy0 device attributes are still present and correct
   run kubectl get resourceslices -o jsonpath="{.items[*].spec.devices[?(@.name=='$DUMMY_IFACE')].attributes}"
