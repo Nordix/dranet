@@ -483,15 +483,13 @@ func (db *DB) addRDMAAttributes(devices []resourceapi.Device) []resourceapi.Devi
 	for i := range devices {
 		isRDMA := false
 		if ifName := devices[i].Attributes[apis.AttrInterfaceName].StringValue; ifName != nil && *ifName != "" {
-			// Try rdmamap library first
-			isRDMA = rdmamap.IsRDmaDeviceForNetdevice(*ifName)
-
-			// Fallback to sysfs check if rdmamap fails. This is particularly
-			// needed for InfiniBand interfaces where rdmamap has a bug comparing
-			// against node GUID instead of port GUID:
-			// https://github.com/Mellanox/rdmamap/issues/15
-			if !isRDMA {
-				isRDMA = isRdmaDeviceInSysfs(*ifName)
+			// Netdev-linked device (RoCE or IPoIB): if AttrRDMADevice was already
+			// set, trust it; otherwise resolve and publish the kernel RDMA link name.
+			if rdmaDevAttr, ok := devices[i].Attributes[apis.AttrRDMADevice]; ok && rdmaDevAttr.StringValue != nil && *rdmaDevAttr.StringValue != "" {
+				isRDMA = true
+			} else if rdmaDevName, err := GetRdmaDevice(*ifName); err == nil && rdmaDevName != "" {
+				isRDMA = true
+				devices[i].Attributes[apis.AttrRDMADevice] = resourceapi.DeviceAttribute{StringValue: ptr.To(rdmaDevName)}
 			}
 		} else if pciAddr := devices[i].Attributes[apis.AttrPCIAddress].StringValue; pciAddr != nil && *pciAddr != "" {
 			// IB-only device: has RDMA capability but no netdev interface.
