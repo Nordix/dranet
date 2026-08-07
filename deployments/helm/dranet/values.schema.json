@@ -67,6 +67,20 @@
           "type": "string",
           "description": "CEL expression to filter network interface attributes"
         },
+        "dbPath": {
+          "type": "string",
+          "description": "Persistent bbolt database path under /var/run/dranet; set to an empty string to use in-memory state",
+          "allOf": [
+            {
+              "pattern": "^$|^/var/run/dranet/.+"
+            },
+            {
+              "not": {
+                "pattern": "(^|/)\\.\\.?(/|$)"
+              }
+            }
+          ]
+        },
         "inventoryMinPollInterval": {
           "type": "string",
           "pattern": "^[0-9]+(ns|us|ms|s|m|h)$",
@@ -86,10 +100,61 @@
         },
         "cloudProviderHint": {
           "type": "string",
-          "enum": ["GCE", "AZURE", "OKE", "AWS", "ALIBABA", "NONE"],
+          "enum": ["GCE", "AZURE", "OKE", "AWS", "ALIBABA", "webhook", "NONE"],
           "description": "Hint for the cloud provider plugin; auto-detected if unset"
+        },
+        "profileProvider": {
+          "type": "string",
+          "enum": ["cloud", "webhook", "none"],
+          "description": "Provider for user profile configuration"
+        },
+        "webhookURL": {
+          "type": "string",
+          "description": "HTTP, HTTPS, or Unix socket URL for cloud and profile webhook providers"
+        },
+        "featureGates": {
+          "type": "string",
+          "description": "Comma-separated feature gate settings in key=value format"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "cloudProviderHint": {
+                "const": "webhook"
+              }
+            },
+            "required": ["cloudProviderHint"]
+          },
+          "then": {
+            "properties": {
+              "webhookURL": {
+                "minLength": 1
+              }
+            },
+            "required": ["webhookURL"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "profileProvider": {
+                "const": "webhook"
+              }
+            },
+            "required": ["profileProvider"]
+          },
+          "then": {
+            "properties": {
+              "webhookURL": {
+                "minLength": 1
+              }
+            },
+            "required": ["webhookURL"]
+          }
+        }
+      ]
     },
     "nodeSelector": {
       "type": "object"
@@ -119,7 +184,10 @@
       "additionalProperties": false,
       "properties": {
         "annotations": {
-          "type": "object"
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       }
     }

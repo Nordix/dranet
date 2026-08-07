@@ -131,5 +131,3 @@ kind-image: image-build
 
 # The main release target, which pushes all images and helm charts.
 release: image-push helm-push
-
-

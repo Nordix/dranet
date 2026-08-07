@@ -57,6 +57,9 @@ spec:
             {{- if .Values.args.filter }}
             - {{ print "--filter=" .Values.args.filter | quote }}
             {{- end }}
+            {{- if (hasKey .Values.args "dbPath") }}
+            - {{ printf "--db-path=%s" .Values.args.dbPath | quote }}
+            {{- end }}
             {{- if .Values.args.inventoryMinPollInterval }}
             - --inventory-min-poll-interval={{ .Values.args.inventoryMinPollInterval }}
             {{- end }}
@@ -71,6 +74,15 @@ spec:
             {{- end }}
             {{- if .Values.args.cloudProviderHint }}
             - --cloud-provider-hint={{ .Values.args.cloudProviderHint }}
+            {{- end }}
+            {{- if (hasKey .Values.args "profileProvider") }}
+            - {{ printf "--profile-provider=%s" .Values.args.profileProvider | quote }}
+            {{- end }}
+            {{- if (hasKey .Values.args "webhookURL") }}
+            - {{ printf "--webhook-url=%s" .Values.args.webhookURL | quote }}
+            {{- end }}
+            {{- if (hasKey .Values.args "featureGates") }}
+            - {{ printf "--feature-gates=%s" .Values.args.featureGates | quote }}
             {{- end }}
             - --kubelet-root-dir={{ .Values.kubeletRootDir }}
           env:
@@ -113,6 +125,8 @@ spec:
             - name: bpf-programs
               mountPath: /sys/fs/bpf
               mountPropagation: HostToContainer
+            - name: dranet-run
+              mountPath: /var/run/dranet
       volumes:
         - name: device-plugin
           hostPath:
@@ -132,3 +146,7 @@ spec:
         - name: bpf-programs
           hostPath:
             path: /sys/fs/bpf
+        - name: dranet-run
+          hostPath:
+            path: /var/run/dranet
+            type: DirectoryOrCreate
