@@ -52,6 +52,7 @@ type fakeInventoryDB struct {
 	GetDeviceConfigFunc      func(deviceName string) (*apis.NetworkConfig, bool)
 	GetNetInterfaceNameFunc  func(deviceName string) (string, error)
 	IsIBOnlyDeviceFunc       func(deviceName string) bool
+	GetRDMADeviceNameFunc    func(deviceName string) (string, error)
 	GetProfileConfigFunc     func(deviceName string, claimUID types.UID, config *apis.NetworkConfig) (*apis.NetworkConfig, error)
 	ReleaseProfileConfigFunc func(deviceName string, claimUID types.UID, config *apis.NetworkConfig) error
 }
@@ -89,7 +90,12 @@ func (m *fakeInventoryDB) IsIBOnlyDevice(deviceName string) bool {
 	return false
 }
 
-func (m *fakeInventoryDB) GetRDMADeviceName(_ string) (string, error) { return "", nil }
+func (m *fakeInventoryDB) GetRDMADeviceName(deviceName string) (string, error) {
+	if m.GetRDMADeviceNameFunc != nil {
+		return m.GetRDMADeviceNameFunc(deviceName)
+	}
+	return "", nil
+}
 
 func (m *fakeInventoryDB) GetDeviceConfig(deviceName string) (*apis.NetworkConfig, bool) {
 	if m.GetDeviceConfigFunc != nil {

@@ -193,7 +193,6 @@ func (np *NetworkDriver) prepareResourceClaim(ctx context.Context, claim *resour
 	}
 
 	var errorList []error
-	charDevices := sets.New[string]()
 	for _, result := range claim.Status.Allocation.Devices.Results {
 		// A single ResourceClaim can have devices managed by distinct DRA
 		// drivers. One common use case for this is device topology alignment
@@ -288,7 +287,7 @@ func (np *NetworkDriver) prepareResourceClaim(ctx context.Context, claim *resour
 				errorList = append(errorList, fmt.Errorf("failed to get RDMA device name for IB-only device %s: %v", result.Device, err))
 				continue
 			}
-			deviceCfg.RDMADevice = buildRDMAConfig(rdmaDevName, charDevices)
+			deviceCfg.RDMADevice = buildRDMAConfig(rdmaDevName)
 			if err := np.podConfigStore.SetDeviceConfig(podUID, result.Device, deviceCfg); err != nil {
 				errorList = append(errorList, fmt.Errorf("failed to persist device config for pod %s device %s: %v", podUID, result.Device, err))
 			}
@@ -442,7 +441,7 @@ func (np *NetworkDriver) prepareResourceClaim(ctx context.Context, claim *resour
 		// Get RDMA configuration: link and char devices
 		if rdmaDev, err := inventory.GetRdmaDevice(ifName); err == nil && rdmaDev != "" {
 			klog.V(2).Infof("RunPodSandbox processing RDMA device: %s", rdmaDev)
-			deviceCfg.RDMADevice = buildRDMAConfig(rdmaDev, charDevices)
+			deviceCfg.RDMADevice = buildRDMAConfig(rdmaDev)
 		}
 
 		// Remove the pinned programs before the NRI hooks since it
@@ -557,10 +556,10 @@ func formatDeviceNames(devices []resourceapi.Device, max int) string {
 }
 
 // buildRDMAConfig populates an RDMAConfig for the given rdma device name.
-// It inserts the rdma_cm and per-device character device paths into charDevices,
-// then resolves each path to a LinuxDevice entry.
-func buildRDMAConfig(rdmaDevName string, charDevices sets.Set[string]) RDMAConfig {
+// It resolves the rdma_cm and per-device character device paths to LinuxDevice entries.
+func buildRDMAConfig(rdmaDevName string) RDMAConfig {
 	cfg := RDMAConfig{LinkDev: rdmaDevName}
+	charDevices := sets.New[string]()
 	charDevices.Insert(rdmaCmPath)
 	charDevices.Insert(rdmamap.GetRdmaCharDevices(rdmaDevName)...)
 	for _, devpath := range charDevices.UnsortedList() {
