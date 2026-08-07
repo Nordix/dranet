@@ -18,16 +18,18 @@ package driver
 
 import (
 	"context"
-	"fmt"
-	"strings"
-	"testing"
-
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"syscall"
+	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/vishvananda/netlink"
 	resourcev1 "k8s.io/api/resource/v1"
 	k8sresource "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,6 +37,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/utils/ptr"
+	userns "sigs.k8s.io/dranet/internal/testutils"
 	"sigs.k8s.io/dranet/pkg/apis"
 	"sigs.k8s.io/dranet/pkg/cloudprovider"
 	"sigs.k8s.io/dranet/pkg/cloudprovider/webhook"
@@ -950,6 +953,305 @@ func TestMergeDevices(t *testing.T) {
 			result := mergeDevices(tc.live, tc.snapshot)
 			if diff := cmp.Diff(tc.expected, result); diff != "" {
 				t.Errorf("mergeDevices result mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TODO: To further improve test coverage, consider constructing and mounting fake
+// sysfs paths for RDMA character devices (e.g., /dev/infiniband/uverbs0). This
+// would allow testing of device discovery and character device aggregation logic
+// that currently depends on the host's physical hardware.
+func TestPrepareResourceClaim(t *testing.T) {
+	userns.Run(t, testPrepareResourceClaim_Namespaced, syscall.CLONE_NEWNET)
+}
+
+func testPrepareResourceClaim_Namespaced(t *testing.T) {
+	ctx := t.Context()
+	const testDriverName = "test.driver"
+
+	// We are in a fresh, isolated netns for all these test cases.
+	// Create a shared dummy interface that tests can rely on.
+	la := netlink.NewLinkAttrs()
+	la.Name = "dummy0"
+	dummy := &netlink.Dummy{LinkAttrs: la}
+	if err := netlink.LinkAdd(dummy); err != nil && !strings.Contains(err.Error(), "file exists") {
+		t.Fatalf("Failed to create shared dummy interface: %v", err)
+	}
+
+	testCases := []struct {
+		name          string
+		claim         *resourcev1.ResourceClaim
+		setupDB       func(*fakeInventoryDB)
+		wantErr       string
+		wantPodConfig *PodConfig
+	}{
+		{
+			name: "single IB-only device builds RDMA config successfully",
+			claim: &resourcev1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{UID: "claim-uid-ib-single", Namespace: "default", Name: "claim-ib-single"},
+				Status: resourcev1.ResourceClaimStatus{
+					ReservedFor: []resourcev1.ResourceClaimConsumerReference{
+						{APIGroup: "", Resource: "pods", Name: "test-pod", UID: "pod-uid-ib-single"},
+					},
+					Allocation: &resourcev1.AllocationResult{
+						Devices: resourcev1.DeviceAllocationResult{
+							Results: []resourcev1.DeviceRequestAllocationResult{
+								{Driver: testDriverName, Device: "ib-dev-0", Request: "req-0"},
+							},
+						},
+					},
+				},
+			},
+			setupDB: func(db *fakeInventoryDB) {
+				db.IsIBOnlyDeviceFunc = func(deviceName string) bool { return true }
+				db.GetRDMADeviceNameFunc = func(deviceName string) (string, error) {
+					return "fake_mlx5_0", nil
+				}
+				db.GetDeviceFunc = func(deviceName string) (resourcev1.Device, bool) {
+					return resourcev1.Device{Name: deviceName}, true
+				}
+			},
+			wantPodConfig: &PodConfig{
+				DeviceConfigs: map[string]DeviceConfig{
+					"ib-dev-0": {
+						Claim: types.NamespacedName{
+							Namespace: "default",
+							Name:      "claim-ib-single",
+						},
+						DeviceSnapshot: &resourcev1.Device{Name: "ib-dev-0"},
+						RDMADevice: RDMAConfig{
+							LinkDev: "fake_mlx5_0",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "multiple IB-only devices in single claim build independent RDMA configs without accumulation",
+			claim: &resourcev1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{UID: "claim-uid-ib-multi", Namespace: "default", Name: "claim-ib-multi"},
+				Status: resourcev1.ResourceClaimStatus{
+					ReservedFor: []resourcev1.ResourceClaimConsumerReference{
+						{APIGroup: "", Resource: "pods", Name: "test-pod", UID: "pod-uid-ib-multi"},
+					},
+					Allocation: &resourcev1.AllocationResult{
+						Devices: resourcev1.DeviceAllocationResult{
+							Results: []resourcev1.DeviceRequestAllocationResult{
+								// Two requests for two separate IB devices within the same claim
+								{Driver: testDriverName, Device: "ib-dev-0", Request: "req-0"},
+								{Driver: testDriverName, Device: "ib-dev-1", Request: "req-1"},
+							},
+						},
+					},
+				},
+			},
+			setupDB: func(db *fakeInventoryDB) {
+				db.IsIBOnlyDeviceFunc = func(deviceName string) bool { return true }
+				db.GetRDMADeviceNameFunc = func(deviceName string) (string, error) {
+					switch deviceName {
+					case "ib-dev-0":
+						return "fake_mlx5_0", nil
+					case "ib-dev-1":
+						return "fake_mlx5_1", nil
+					default:
+						return "", fmt.Errorf("unexpected device %s", deviceName)
+					}
+				}
+				db.GetDeviceFunc = func(deviceName string) (resourcev1.Device, bool) {
+					return resourcev1.Device{Name: deviceName}, true
+				}
+			},
+			wantPodConfig: &PodConfig{
+				DeviceConfigs: map[string]DeviceConfig{
+					"ib-dev-0": {
+						Claim: types.NamespacedName{
+							Namespace: "default",
+							Name:      "claim-ib-multi",
+						},
+						DeviceSnapshot: &resourcev1.Device{Name: "ib-dev-0"},
+						RDMADevice: RDMAConfig{
+							LinkDev: "fake_mlx5_0",
+						},
+					},
+					"ib-dev-1": {
+						Claim: types.NamespacedName{
+							Namespace: "default",
+							Name:      "claim-ib-multi",
+						},
+						DeviceSnapshot: &resourcev1.Device{Name: "ib-dev-1"},
+						RDMADevice: RDMAConfig{
+							LinkDev: "fake_mlx5_1",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "single network device builds config successfully",
+			claim: &resourcev1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{UID: "claim-uid-net-single", Namespace: "default", Name: "claim-net-single"},
+				Status: resourcev1.ResourceClaimStatus{
+					ReservedFor: []resourcev1.ResourceClaimConsumerReference{
+						{APIGroup: "", Resource: "pods", Name: "test-pod", UID: "pod-uid-net-single"},
+					},
+					Allocation: &resourcev1.AllocationResult{
+						Devices: resourcev1.DeviceAllocationResult{
+							Results: []resourcev1.DeviceRequestAllocationResult{
+								{Driver: testDriverName, Device: "net-dev-0", Request: "req-0"},
+							},
+						},
+					},
+				},
+			},
+			setupDB: func(db *fakeInventoryDB) {
+				db.IsIBOnlyDeviceFunc = func(deviceName string) bool { return false }
+				// Return the shared 'dummy0' created at the start of the test
+				db.GetNetInterfaceNameFunc = func(deviceName string) (string, error) {
+					return "dummy0", nil
+				}
+				db.GetDeviceFunc = func(deviceName string) (resourcev1.Device, bool) {
+					return resourcev1.Device{Name: deviceName}, true
+				}
+			},
+			wantPodConfig: &PodConfig{
+				DeviceConfigs: map[string]DeviceConfig{
+					"net-dev-0": {
+						Claim: types.NamespacedName{
+							Namespace: "default",
+							Name:      "claim-net-single",
+						},
+						DeviceSnapshot: &resourcev1.Device{Name: "net-dev-0"},
+						NetworkInterfaceConfigInHost: apis.NetworkConfig{
+							Interface: apis.InterfaceConfig{
+								Name: "dummy0",
+							},
+						},
+						NetworkInterfaceConfigInPod: apis.NetworkConfig{
+							Interface: apis.InterfaceConfig{
+								Name: "dummy0",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "no pods allocated to claim",
+			claim: &resourcev1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{UID: "claim-uid-empty", Namespace: "default", Name: "claim-empty"},
+				Status: resourcev1.ResourceClaimStatus{
+					ReservedFor: []resourcev1.ResourceClaimConsumerReference{},
+				},
+			},
+		},
+		{
+			name: "multiple pods allocated to claim returns error",
+			claim: &resourcev1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{UID: "claim-uid-multi-pod", Namespace: "default", Name: "claim-multi-pod"},
+				Status: resourcev1.ResourceClaimStatus{
+					ReservedFor: []resourcev1.ResourceClaimConsumerReference{
+						{APIGroup: "", Resource: "pods", Name: "pod-1", UID: "pod-uid-1"},
+						{APIGroup: "", Resource: "pods", Name: "pod-2", UID: "pod-uid-2"},
+					},
+				},
+			},
+			wantErr: "driver only supports one pod per claim, got 2",
+		},
+		{
+			name: "unsupported consumer reference returns error",
+			claim: &resourcev1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{UID: "claim-uid-unsupported-ref", Namespace: "default", Name: "claim-unsupported-ref"},
+				Status: resourcev1.ResourceClaimStatus{
+					ReservedFor: []resourcev1.ResourceClaimConsumerReference{
+						{APIGroup: "apps", Resource: "deployments", Name: "dep-1", UID: "dep-uid-1"},
+					},
+				},
+			},
+			wantErr: "driver only supports Pods",
+		},
+		{
+			name: "devices managed by other drivers are ignored",
+			claim: &resourcev1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{UID: "claim-uid-other-driver", Namespace: "default", Name: "claim-other-driver"},
+				Status: resourcev1.ResourceClaimStatus{
+					ReservedFor: []resourcev1.ResourceClaimConsumerReference{
+						{APIGroup: "", Resource: "pods", Name: "test-pod", UID: "pod-uid-1"},
+					},
+					Allocation: &resourcev1.AllocationResult{
+						Devices: resourcev1.DeviceAllocationResult{
+							Results: []resourcev1.DeviceRequestAllocationResult{
+								// This result specifies a different driver, so it should be safely ignored
+								{Driver: "other.driver.io", Device: "gpu-0", Request: "gpu-req"},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "device interface lookup failure returns error",
+			claim: &resourcev1.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{UID: "claim-uid-net-fail", Namespace: "default", Name: "claim-net-fail"},
+				Status: resourcev1.ResourceClaimStatus{
+					ReservedFor: []resourcev1.ResourceClaimConsumerReference{
+						{APIGroup: "", Resource: "pods", Name: "test-pod", UID: "pod-uid-net-fail"},
+					},
+					Allocation: &resourcev1.AllocationResult{
+						Devices: resourcev1.DeviceAllocationResult{
+							Results: []resourcev1.DeviceRequestAllocationResult{
+								{Driver: testDriverName, Device: "net-dev-0", Request: "req-0"},
+							},
+						},
+					},
+				},
+			},
+			setupDB: func(db *fakeInventoryDB) {
+				db.IsIBOnlyDeviceFunc = func(deviceName string) bool { return false }
+				// Simulate failure when retrieving the interface name
+				db.GetNetInterfaceNameFunc = func(deviceName string) (string, error) {
+					return "", fmt.Errorf("interface not found in inventory")
+				}
+			},
+			wantErr: "failed to get network interface name for device net-dev-0",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeDB := newFakeInventoryDB()
+			if tc.setupDB != nil {
+				tc.setupDB(fakeDB)
+			}
+
+			np := &NetworkDriver{
+				netdb:          fakeDB,
+				driverName:     testDriverName,
+				podConfigStore: mustNewPodConfigStore(),
+				eventRecorder:  record.NewFakeRecorder(100),
+			}
+
+			gotResult := np.prepareResourceClaim(ctx, tc.claim)
+
+			if tc.wantErr != "" {
+				if gotResult.Err == nil || !strings.Contains(gotResult.Err.Error(), tc.wantErr) {
+					t.Fatalf("prepareResourceClaim() error = %v, want error containing %q", gotResult.Err, tc.wantErr)
+				}
+			} else if gotResult.Err != nil {
+				t.Fatalf("prepareResourceClaim() unexpected error = %v", gotResult.Err)
+			}
+
+			var gotPodConfig *PodConfig
+			if len(tc.claim.Status.ReservedFor) > 0 {
+				podUID := tc.claim.Status.ReservedFor[0].UID
+				if podCfg, ok := np.podConfigStore.GetPodConfig(podUID); ok {
+					gotPodConfig = &podCfg
+				}
+			}
+
+			opts := []cmp.Option{cmpopts.EquateEmpty(), cmpopts.IgnoreFields(PodConfig{}, "LastNRIActivity")}
+			if diff := cmp.Diff(tc.wantPodConfig, gotPodConfig, opts...); diff != "" {
+				t.Errorf("PodConfig mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
