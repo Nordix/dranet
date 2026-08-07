@@ -19,14 +19,18 @@ logVerbosity: 4
 metricsPort: ~
 metricsPath: /healthz
 
-# dranet daemon arguments — omit any field to use the binary's built-in default
+# DRANET daemon arguments. Omit a field to use the binary's built-in default.
 args: {}
 #  filter: '!("dra.net/type" in attributes) || attributes["dra.net/type"].StringValue  != "veth"'
+#  dbPath: "/var/run/dranet/dranet.db"
 #  inventoryMinPollInterval: "2s"
 #  inventoryMaxPollInterval: "1m"
 #  inventoryPollBurst: 5
 #  moveIBInterfaces: true
 #  cloudProviderHint: ""
+#  profileProvider: "cloud"
+#  webhookURL: ""
+#  featureGates: ""
 
 # kubeletRootDir is the kubelet data directory (its --root-dir). The driver's
 # registration socket lives under <kubeletRootDir>/plugins_registry (which the
