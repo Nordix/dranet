@@ -99,6 +99,8 @@ spec:
             int: 8896
           dra.net/numaNode:
             int: 1
+          resource.kubernetes.io/numaNode:
+            int: 1
           dra.net/pciAddressBus:
             string: c8
           dra.net/pciAddressDevice:
@@ -122,6 +124,12 @@ spec:
       name: gpu7rdma0
 ...
 ```
+
+DRANET publishes the standardized
+[`resource.kubernetes.io/numaNode`](https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/6072-dra-standard-numanode)
+attribute and keeps `dra.net/numaNode` for compatibility. To publish the
+standard attribute as a list, enable `DRAListTypeAttributes` in Kubernetes and
+DRANET (`--feature-gates=DRAListTypeAttributes=true`).
 
 Once the resources are available, users can create `DeviceClasses`, `ResourceClaims` and/or `ResourceClaimTemplates` to schedule pods.
 

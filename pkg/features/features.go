@@ -5,6 +5,9 @@ import (
 )
 
 const (
+	// DRAListTypeAttributes enables list-valued standardized NUMA attributes.
+	DRAListTypeAttributes featuregate.Feature = "DRAListTypeAttributes"
+
 	// PersistentResourceSliceAttributes gates the persistence of device
 	// attributes (like MAC, MTU, etc.) in the ResourceSlice across daemon restarts.
 	// owner: @purvavj
@@ -22,6 +25,10 @@ var DefaultFeatureGate featuregate.FeatureGate = DefaultMutableFeatureGate
 
 func init() {
 	err := DefaultMutableFeatureGate.Add(map[featuregate.Feature]featuregate.FeatureSpec{
+		DRAListTypeAttributes: {
+			Default:    false,
+			PreRelease: featuregate.Alpha,
+		},
 		PersistentResourceSliceAttributes: {
 			Default:    false,
 			PreRelease: featuregate.Alpha,
