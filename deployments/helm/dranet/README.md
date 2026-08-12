@@ -32,6 +32,8 @@ The following table lists the configurable parameters and their default values:
 | `resources.limits.cpu` | CPU resource limit | `""` (not set) |
 | `resources.limits.memory` | Memory resource limit | `""` (not set) |
 | `serviceAccount.annotations` | Annotations to add to the service account | `{}` |
+| `extraVolumes` | Extra volumes, added after the built-in volumes | `[]` |
+| `extraVolumeMounts` | Extra volume mounts for the dranet container, added after the built-in mounts | `[]` |
 | `args.filter` | CEL expression to filter network interface attributes | see binary default |
 | `args.dbPath` | Persistent bbolt database path; set to `""` to use in-memory state | binary default: `/var/run/dranet/dranet.db` |
 | `args.inventoryMinPollInterval` | Minimum interval between two consecutive inventory polls | binary default: `2s` |
@@ -56,6 +58,23 @@ After the upgrade, restart those workloads.
 
 When `args.profileProvider` or `args.cloudProviderHint` is `webhook`, set
 `args.webhookURL` to the webhook endpoint.
+
+`extraVolumes` and `extraVolumeMounts` add entries after the built-in volumes
+and container mounts. The chart does not change the entries. Do not reuse the
+built-in volume names. Example, a host configuration directory mounted
+read-only:
+
+```yaml
+extraVolumes:
+  - name: host-config
+    hostPath:
+      path: /etc/host-config
+      type: DirectoryOrCreate
+extraVolumeMounts:
+  - name: host-config
+    mountPath: /etc/host-config
+    readOnly: true
+```
 
 Parameters can be set at install time using `--set` or a custom values file:
 

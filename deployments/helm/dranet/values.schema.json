@@ -156,6 +156,36 @@
         }
       ]
     },
+    "extraVolumes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": ["name"]
+      }
+    },
+    "extraVolumeMounts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mountPath": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": ["name", "mountPath"]
+      }
+    },
     "nodeSelector": {
       "type": "object"
     },
