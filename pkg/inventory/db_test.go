@@ -471,11 +471,13 @@ type mockCloudInstance struct {
 }
 
 func (m *mockCloudInstance) GetDeviceAttributes(id cloudprovider.DeviceIdentifiers) map[resourceapi.QualifiedName]resourceapi.DeviceAttribute {
-	// For testing, we primarily look up by MAC if present, similar to the GCE implementation for now
+	// Look up by MAC if present, otherwise fall back to the (interface) name.
 	if id.MAC != "" {
 		return m.deviceAttributes[id.MAC]
 	}
-	// We could extend this to look up by Name or PCIAddress if tests require it
+	if id.Name != "" {
+		return m.deviceAttributes[id.Name]
+	}
 	return nil
 }
 
@@ -499,6 +501,12 @@ func TestGetProviderAttributes(t *testing.T) {
 		{
 			name:     "nil device",
 			device:   nil,
+			instance: &mockCloudInstance{},
+			want:     nil,
+		},
+		{
+			name:     "device with no identifiers",
+			device:   &resourceapi.Device{},
 			instance: &mockCloudInstance{},
 			want:     nil,
 		},
@@ -538,6 +546,29 @@ func TestGetProviderAttributes(t *testing.T) {
 			want: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
 				gce.AttrGCENetworkName: {StringValue: ptr.To("test-network")},
 				gce.AttrGCEMachineType: {StringValue: ptr.To("machine-type-a")},
+			},
+		},
+		{
+			// The interface name (from the ifName attribute) must reach
+			// GetDeviceAttributes, not the DRA device name. They differ when the
+			// interface name is not a DNS-1123 label (e.g. it has capital letters),
+			// so the device name is a normalized "net-<hash>".
+			name: "interface name is passed, not the normalized device name",
+			device: &resourceapi.Device{
+				Name: "net-mr2w23lzkjqws3bq", // normalized iface name
+				Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+					apis.AttrInterfaceName: {StringValue: ptr.To("enP22s22f0np0")},
+				},
+			},
+			instance: &mockCloudInstance{
+				deviceAttributes: map[string]map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+					"enP22s22f0np0": {
+						gce.AttrGCENetworkName: {StringValue: ptr.To("test-network")},
+					},
+				},
+			},
+			want: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+				gce.AttrGCENetworkName: {StringValue: ptr.To("test-network")},
 			},
 		},
 		{
