@@ -40,6 +40,19 @@ args: {}
 # kubelet --root-dir on clusters that relocate it; the default suits a standard kubelet.
 kubeletRootDir: /var/lib/kubelet
 
+# Extra volumes and volume mounts for the dranet container.
+# The chart adds them after the built-in ones without changes.
+# Do not reuse the built-in volume names.
+extraVolumes: []
+#  - name: host-config
+#    hostPath:
+#      path: /etc/host-config
+#      type: DirectoryOrCreate
+extraVolumeMounts: []
+#  - name: host-config
+#    mountPath: /etc/host-config
+#    readOnly: true
+
 nodeSelector: {}
 
 affinity: {}

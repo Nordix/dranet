@@ -155,6 +155,11 @@ spec:
           mountPropagation: HostToContainer
         - name: dranet-run
           mountPath: /var/run/dranet
+        # Additional host mounts go here. Example, a host configuration
+        # directory mounted read-only (pair with the volume below):
+        # - name: host-config
+        #   mountPath: /etc/host-config
+        #   readOnly: true
       volumes:
       - name: device-plugin
         hostPath:
@@ -178,4 +183,10 @@ spec:
         hostPath:
           path: /var/run/dranet
           type: DirectoryOrCreate
+      # Additional host volumes go here. Example, a host configuration
+      # directory (pair with the mount above):
+      # - name: host-config
+      #   hostPath:
+      #     path: /etc/host-config
+      #     type: DirectoryOrCreate
 ---
