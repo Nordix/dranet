@@ -91,10 +91,26 @@ setup_bpf_device() {
   docker exec "$CLUSTER_NAME"-worker2 bash -c "ip link set up dev dummy0"
 }
 
+# ensure_bpftool puts a bpftool binary at $BATS_TEST_DIRNAME/bpftool.
+# CI downloads it authenticated before the tests run, because anonymous
+# release downloads from shared runner addresses are unreliable. The
+# download here covers local runs.
+ensure_bpftool() {
+  if [[ -x "$BATS_TEST_DIRNAME/bpftool" ]]; then
+    return
+  fi
+  local tmp
+  tmp=$(mktemp -d)
+  curl -fL --connect-timeout 5 --retry 5 --retry-all-errors -o "$tmp/bpftool.tgz" https://github.com/libbpf/bpftool/releases/download/v7.5.0/bpftool-v7.5.0-amd64.tar.gz
+  tar -xzf "$tmp/bpftool.tgz" -C "$BATS_TEST_DIRNAME"
+  chmod +x "$BATS_TEST_DIRNAME/bpftool"
+  rm -rf "$tmp"
+}
+
 setup_tcx_filter() {
   docker cp "$BATS_TEST_DIRNAME"/dummy_bpf_tcx.o "$CLUSTER_NAME"-worker2:/dummy_bpf_tcx.o
-  docker exec "$CLUSTER_NAME"-worker2 bash -c "curl --connect-timeout 5 --retry 3 -L https://github.com/libbpf/bpftool/releases/download/v7.5.0/bpftool-v7.5.0-amd64.tar.gz | tar -xz"
-  docker exec "$CLUSTER_NAME"-worker2 bash -c "chmod +x bpftool"
+  ensure_bpftool
+  docker cp "$BATS_TEST_DIRNAME"/bpftool "$CLUSTER_NAME"-worker2:/bpftool
   docker exec "$CLUSTER_NAME"-worker2 bash -c "./bpftool prog load dummy_bpf_tcx.o /sys/fs/bpf/dummy_prog_tcx"
   docker exec "$CLUSTER_NAME"-worker2 bash -c "./bpftool net attach tcx_ingress pinned /sys/fs/bpf/dummy_prog_tcx dev dummy0"
   # We update the interface to trigger a DRANET driver notification, which
@@ -332,10 +348,11 @@ wait_for_ready_pods() {
   kubectl apply -f "$BATS_TEST_DIRNAME"/../tests/manifests/resourceclaim_disable_ebpf.yaml
   kubectl wait --for=condition=ready pod/pod-ebpf --timeout=120s
 
-  run kubectl exec pod-ebpf -- ash -c "curl --connect-timeout 5 --retry 3 -L https://github.com/libbpf/bpftool/releases/download/v7.5.0/bpftool-v7.5.0-amd64.tar.gz | tar -xz && chmod +x bpftool"
+  ensure_bpftool
+  run kubectl cp "$BATS_TEST_DIRNAME"/bpftool pod-ebpf:/bpftool
   assert_success
 
-  run kubectl exec pod-ebpf -- ash -c "./bpftool net show dev dummy0"
+  run kubectl exec pod-ebpf -- ash -c "chmod +x /bpftool && /bpftool net show dev dummy0"
   assert_success
   refute_output --partial "tcx/ingress handle_ingress prog_id"
   refute_output --partial "dummy_bpf.o:[classifier]"
