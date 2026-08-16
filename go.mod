@@ -15,7 +15,7 @@ require (
 	github.com/containerd/nri v0.12.1
 	github.com/google/cel-go v0.31.0
 	github.com/google/go-cmp v0.7.0
-	github.com/insomniacslk/dhcp v0.0.0-20250417080101-5f8cf70e8c5f
+	github.com/insomniacslk/dhcp v0.0.0-20260719225207-c76316d4aa82
 	github.com/jaypipes/ghw v0.25.0
 	github.com/jaypipes/pcidb v1.1.1
 	github.com/mdlayher/genetlink v1.4.0
