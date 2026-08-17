@@ -841,9 +841,18 @@ func (db *DB) addPCIAttributes(devices []resourceapi.Device, pciInfo *ghw.PCIInf
 				db.deviceAttributeMachineModifiers...,
 			)
 			if err != nil {
-				klog.V(4).Infof("Not publishing standardized NUMA attribute for PCI device %s: %v", normalizedAddr, err)
+				klog.Errorf("Not publishing standardized NUMA attribute for PCI device %s: %v", normalizedAddr, err)
 			} else {
 				devices[i].Attributes[numaAttr.Name] = numaAttr.Value
+			}
+		}
+
+		if _, hasAttr := devices[i].Attributes[deviceattribute.StandardDeviceAttributePCIeRoot]; !hasAttr {
+			pcieRootAttr, err := deviceattribute.GetPCIeRootAttributeByPCIBusID(*pciAddrAttr.StringValue)
+			if err != nil {
+				klog.Errorf("Could not get PCIe root for PCI device %s: %v", normalizedAddr, err)
+			} else {
+				devices[i].Attributes[pcieRootAttr.Name] = pcieRootAttr.Value
 			}
 		}
 
@@ -863,15 +872,6 @@ func (db *DB) addPCIAttributes(devices []resourceapi.Device, pciInfo *ghw.PCIInf
 		}
 		if _, hasAttr := devices[i].Attributes[apis.AttrPCISubsystem]; !hasAttr && pciDev.Subsystem != nil {
 			devices[i].Attributes[apis.AttrPCISubsystem] = resourceapi.DeviceAttribute{StringValue: &pciDev.Subsystem.ID}
-		}
-
-		if _, hasAttr := devices[i].Attributes[deviceattribute.StandardDeviceAttributePCIeRoot]; !hasAttr {
-			pcieRootAttr, err := deviceattribute.GetPCIeRootAttributeByPCIBusID(*pciAddrAttr.StringValue)
-			if err != nil {
-				klog.Errorf("Could not get PCIe root for PCI device %s: %v", normalizedAddr, err)
-			} else {
-				devices[i].Attributes[pcieRootAttr.Name] = pcieRootAttr.Value
-			}
 		}
 	}
 	return devices

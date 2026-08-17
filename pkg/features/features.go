@@ -25,6 +25,8 @@ var DefaultFeatureGate featuregate.FeatureGate = DefaultMutableFeatureGate
 
 func init() {
 	err := DefaultMutableFeatureGate.Add(map[featuregate.Feature]featuregate.FeatureSpec{
+		// The `DRAListTypeAttributes` feature gate in DRANET must also be enabled in the Kubernetes control plane.
+		// If this is enabled in DRANET but not the control plane ResourceSlices will not be published.
 		DRAListTypeAttributes: {
 			Default:    false,
 			PreRelease: featuregate.Alpha,

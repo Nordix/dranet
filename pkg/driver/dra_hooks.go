@@ -542,8 +542,10 @@ func (np *NetworkDriver) HandleError(ctx context.Context, err error, msg string)
 	runtime.HandleErrorWithContext(ctx, err, msg)
 }
 
-// WatchHealthStatus implements the Kubernetes 1.37 DRAPlugin contract. DRANET
-// disables the optional health service.
+// WatchHealthStatus implements the DRAPlugin contract, which requires this
+// method as of Kubernetes 1.37:
+// https://github.com/kubernetes/kubernetes/pull/139477
+// DRANET disables the optional health service, so this method is not called.
 func (np *NetworkDriver) WatchHealthStatus(context.Context, chan<- kubeletplugin.DeviceHealthReport) error {
 	return kubeletplugin.ErrHealthNotSupported
 }
