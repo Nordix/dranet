@@ -546,6 +546,7 @@ func (np *NetworkDriver) HandleError(ctx context.Context, err error, msg string)
 // method as of Kubernetes 1.37:
 // https://github.com/kubernetes/kubernetes/pull/139477
 // DRANET disables the optional health service, so this method is not called.
+// TODO: This function should be implemented as part of https://github.com/kubernetes-sigs/dranet/issues/293
 func (np *NetworkDriver) WatchHealthStatus(context.Context, chan<- kubeletplugin.DeviceHealthReport) error {
 	return kubeletplugin.ErrHealthNotSupported
 }
