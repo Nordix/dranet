@@ -63,13 +63,16 @@ func applyRoutingConfig(containerNsPAth string, ifName string, routeConfig []api
 	// # ip route show dev eth0
 	//   10.0.5.0/24 via 10.0.5.1 proto dhcp src 10.0.5.8
 	//   10.0.5.1 proto dhcp scope link src 10.0.5.8
-	slices.SortFunc(routeConfig, func(a, b apis.RouteConfig) int {
-		// Routes with scope RT_SCOPE_LINK (253) should come before RT_SCOPE_UNIVERSE (0)
+	// Sort a clone: routeConfig aliases the pod's stored slice, so sorting it in
+	// place would reorder the stored routes and race with their readers.
+	sortedRoutes := slices.Clone(routeConfig)
+	slices.SortFunc(sortedRoutes, func(a, b apis.RouteConfig) int {
+		// Routes with scope RT_SCOPE_LINK (253) should come before RT_SCOPE_UNIVERSE (0).
 		// A higher scope value means it's processed earlier.
 		return int(b.Scope) - int(a.Scope)
 	})
 
-	for _, route := range routeConfig {
+	for _, route := range sortedRoutes {
 		table := route.Table
 		// If VRF is enabled (vrfTable > 0), all routes for this interface
 		// must go into the VRF table to be reachable via the VRF device.
