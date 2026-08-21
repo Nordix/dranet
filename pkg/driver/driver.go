@@ -192,6 +192,7 @@ func Start(ctx context.Context, driverName string, kubeClient kubernetes.Interfa
 		kubeletplugin.KubeClient(kubeClient),
 		kubeletplugin.RegistrarDirectoryPath(filepath.Join(plugin.kubeletRootDir, "plugins_registry")),
 		kubeletplugin.PluginDataDirectoryPath(driverPluginPath),
+		kubeletplugin.HealthService(false),
 	}
 	d, err := kubeletplugin.Start(ctx, plugin, kubeletOpts...)
 	if err != nil {

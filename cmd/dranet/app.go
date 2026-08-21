@@ -202,6 +202,9 @@ func main() {
 		inventory.WithMaxPollInterval(maxPollInterval),
 		inventory.WithMoveIBInterfaces(moveIBInterfaces),
 	}
+	if features.DefaultFeatureGate.Enabled(features.DRAListTypeAttributes) {
+		optsDb = append(optsDb, inventory.WithListNUMAAttributes())
+	}
 
 	if cloudInst != nil {
 		optsDb = append(optsDb, inventory.WithCloudInstance(cloudInst))

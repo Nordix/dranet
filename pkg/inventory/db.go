@@ -97,6 +97,14 @@ type DB struct {
 	// When false, IPoIB interfaces are skipped and the underlying device is
 	// exposed as an IB-only RDMA device.
 	moveIBInterfaces bool
+
+	// numaAttributeForm selects the representation of the standardized
+	// resource.kubernetes.io/numaNode attribute. The legacy dra.net/numaNode
+	// attribute remains a scalar for backwards compatibility.
+	numaAttributeForm deviceattribute.AttributeForm
+	// deviceAttributeMachineModifiers is used to redirect the upstream
+	// topology helpers to a synthetic sysfs in unit tests.
+	deviceAttributeMachineModifiers []deviceattribute.MachineModifier
 }
 
 type Option func(*DB)
@@ -116,6 +124,15 @@ func WithMaxPollInterval(d time.Duration) Option {
 func WithMoveIBInterfaces(move bool) Option {
 	return func(db *DB) {
 		db.moveIBInterfaces = move
+	}
+}
+
+// WithListNUMAAttributes publishes resource.kubernetes.io/numaNode as an
+// integer list containing the physical NUMA node followed by equally local,
+// same-socket NUMA nodes.
+func WithListNUMAAttributes() Option {
+	return func(db *DB) {
+		db.numaAttributeForm = deviceattribute.ListAttribute
 	}
 }
 
@@ -797,11 +814,11 @@ func (db *DB) discoverStandaloneRDMADevices(devices []resourceapi.Device) []reso
 // after all discovery steps so that attributes are populated uniformly
 // regardless of which discovery path found the device.
 //
-// ghw is the sole data source: it reads vendor/product from pcidb and NUMA
-// from /sys/bus/pci/devices/<BDF>/numa_node for all PCI devices regardless of
-// class. If a device is not found in ghw (e.g., modalias parsing failure),
-// its PCI attributes are simply left unset — the device is still published
-// with its identity attributes from discovery.
+// The Kubernetes deviceattribute helpers derive standardized topology
+// attributes directly from sysfs. ghw supplies the legacy NUMA attribute and
+// vendor/product metadata. If a device is not found in ghw (e.g., modalias
+// parsing failure), the standardized NUMA attribute can still be published
+// from its PCI address.
 func (db *DB) addPCIAttributes(devices []resourceapi.Device, pciInfo *ghw.PCIInfo) []resourceapi.Device {
 	pciMap := make(map[string]*ghw.PCIDevice)
 	if pciInfo != nil {
@@ -816,6 +833,28 @@ func (db *DB) addPCIAttributes(devices []resourceapi.Device, pciInfo *ghw.PCIInf
 			continue
 		}
 		normalizedAddr := names.NormalizePCIAddress(*pciAddrAttr.StringValue)
+
+		if _, hasAttr := devices[i].Attributes[deviceattribute.StandardDeviceAttributeNUMANode]; !hasAttr {
+			numaAttr, err := deviceattribute.GetNUMANodeAttributeByPCIBusID(
+				*pciAddrAttr.StringValue,
+				db.numaAttributeForm,
+				db.deviceAttributeMachineModifiers...,
+			)
+			if err != nil {
+				klog.V(4).Infof("Not publishing standardized NUMA attribute for PCI device %s: %v", normalizedAddr, err)
+			} else {
+				devices[i].Attributes[numaAttr.Name] = numaAttr.Value
+			}
+		}
+
+		if _, hasAttr := devices[i].Attributes[deviceattribute.StandardDeviceAttributePCIeRoot]; !hasAttr {
+			pcieRootAttr, err := deviceattribute.GetPCIeRootAttributeByPCIBusID(*pciAddrAttr.StringValue)
+			if err != nil {
+				klog.Errorf("Could not get PCIe root for PCI device %s: %v", normalizedAddr, err)
+			} else {
+				devices[i].Attributes[pcieRootAttr.Name] = pcieRootAttr.Value
+			}
+		}
 
 		pciDev, inGhw := pciMap[normalizedAddr]
 		if !inGhw {
@@ -833,15 +872,6 @@ func (db *DB) addPCIAttributes(devices []resourceapi.Device, pciInfo *ghw.PCIInf
 		}
 		if _, hasAttr := devices[i].Attributes[apis.AttrPCISubsystem]; !hasAttr && pciDev.Subsystem != nil {
 			devices[i].Attributes[apis.AttrPCISubsystem] = resourceapi.DeviceAttribute{StringValue: &pciDev.Subsystem.ID}
-		}
-
-		if _, hasAttr := devices[i].Attributes[deviceattribute.StandardDeviceAttributePCIeRoot]; !hasAttr {
-			pcieRootAttr, err := deviceattribute.GetPCIeRootAttributeByPCIBusID(*pciAddrAttr.StringValue)
-			if err != nil {
-				klog.Errorf("Could not get PCIe root for PCI device %s: %v", normalizedAddr, err)
-			} else {
-				devices[i].Attributes[pcieRootAttr.Name] = pcieRootAttr.Value
-			}
 		}
 	}
 	return devices

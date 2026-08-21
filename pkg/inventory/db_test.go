@@ -18,6 +18,8 @@ package inventory
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -29,6 +31,7 @@ import (
 	"github.com/vishvananda/netlink"
 	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/dynamic-resource-allocation/deviceattribute"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/dranet/pkg/apis"
 	"sigs.k8s.io/dranet/pkg/cloudprovider"
@@ -684,6 +687,93 @@ func TestAddPCIAttributes(t *testing.T) {
 		db := &DB{}
 		_ = db.addPCIAttributes(devices, nil)
 	})
+
+	t.Run("publishes standardized scalar NUMA attribute by default", func(t *testing.T) {
+		root := t.TempDir()
+		writeTestSysfsFile(t, root, "bus/pci/devices/0000:00:1f.0/numa_node", "0\n")
+		devices := []resourceapi.Device{{
+			Name: "pci-0000-00-1f-0",
+			Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+				apis.AttrPCIAddress: {StringValue: ptr.To("0000:00:1f.0")},
+			},
+		}}
+		db := &DB{
+			deviceAttributeMachineModifiers: []deviceattribute.MachineModifier{deviceattribute.WithFSFromRoot(root)},
+		}
+
+		result := db.addPCIAttributes(devices, pciInfo)
+		got, ok := result[0].Attributes[deviceattribute.StandardDeviceAttributeNUMANode]
+		if !ok || got.IntValue == nil || *got.IntValue != 0 {
+			t.Fatalf("standardized NUMA attribute = %v, want scalar 0", got)
+		}
+		if got.IntValues != nil {
+			t.Errorf("standardized NUMA attribute has list value %v in scalar mode", got.IntValues)
+		}
+	})
+
+	t.Run("publishes standardized list NUMA attribute", func(t *testing.T) {
+		root := t.TempDir()
+		writeTestSysfsFile(t, root, "bus/pci/devices/0000:00:1f.0/numa_node", "1\n")
+		writeTestSysfsFile(t, root, "devices/system/node/node1/distance", "12 10 12\n")
+		devices := []resourceapi.Device{{
+			Name: "pci-0000-00-1f-0",
+			Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+				apis.AttrPCIAddress: {StringValue: ptr.To("0000:00:1f.0")},
+			},
+		}}
+		db := &DB{
+			numaAttributeForm: deviceattribute.ListAttribute,
+			deviceAttributeMachineModifiers: []deviceattribute.MachineModifier{
+				deviceattribute.WithFSFromRoot(root),
+			},
+		}
+
+		result := db.addPCIAttributes(devices, pciInfo)
+		got, ok := result[0].Attributes[deviceattribute.StandardDeviceAttributeNUMANode]
+		if !ok {
+			t.Fatal("standardized NUMA attribute was not published")
+		}
+		if diff := cmp.Diff([]int64{1, 0, 2}, got.IntValues); diff != "" {
+			t.Errorf("standardized NUMA list mismatch (-want, +got):\n%s", diff)
+		}
+		if got.IntValue != nil {
+			t.Errorf("standardized NUMA attribute has scalar value %d in list mode", *got.IntValue)
+		}
+	})
+
+	t.Run("publishes standardized NUMA attribute without ghw metadata", func(t *testing.T) {
+		root := t.TempDir()
+		writeTestSysfsFile(t, root, "bus/pci/devices/0000:01:00.0/numa_node", "2\n")
+		devices := []resourceapi.Device{{
+			Name: "pci-0000-01-00-0",
+			Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+				apis.AttrPCIAddress: {StringValue: ptr.To("0000:01:00.0")},
+			},
+		}}
+		db := &DB{
+			deviceAttributeMachineModifiers: []deviceattribute.MachineModifier{deviceattribute.WithFSFromRoot(root)},
+		}
+
+		result := db.addPCIAttributes(devices, nil)
+		got, ok := result[0].Attributes[deviceattribute.StandardDeviceAttributeNUMANode]
+		if !ok || got.IntValue == nil || *got.IntValue != 2 {
+			t.Fatalf("standardized NUMA attribute = %v, want scalar 2", got)
+		}
+		if _, ok := result[0].Attributes[apis.AttrNUMANode]; ok {
+			t.Error("legacy NUMA attribute should require ghw metadata")
+		}
+	})
+}
+
+func writeTestSysfsFile(t *testing.T, root, name, contents string) {
+	t.Helper()
+	path := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create fake sysfs directory: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write fake sysfs file: %v", err)
+	}
 }
 
 func TestAddRDMAAttributesStandalone(t *testing.T) {
