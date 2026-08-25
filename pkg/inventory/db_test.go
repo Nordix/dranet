@@ -642,6 +642,40 @@ func TestAddPCIAttributes(t *testing.T) {
 		}
 	})
 
+	t.Run("truncates long product name", func(t *testing.T) {
+		longName := strings.Repeat("a", resourceapi.DeviceAttributeMaxValueLength+10)
+		longPCIInfo := &ghw.PCIInfo{
+			Devices: []*ghw.PCIDevice{
+				{
+					Address: "0000:00:1f.0",
+					Class:   &pcidb.Class{ID: "02"},
+					Product: &pcidb.Product{Name: longName, ID: "0x1234"},
+				},
+			},
+		}
+		devices := []resourceapi.Device{
+			{
+				Name: "0000:00:1f.0",
+				Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+					apis.AttrPCIAddress: {StringValue: ptr.To("0000:00:1f.0")},
+				},
+			},
+		}
+		db := &DB{}
+		result := db.addPCIAttributes(devices, longPCIInfo)
+
+		v, ok := result[0].Attributes[apis.AttrPCIDevice]
+		if !ok || v.StringValue == nil {
+			t.Fatalf("AttrPCIDevice not set, got: %v", v)
+		}
+		if len(*v.StringValue) != resourceapi.DeviceAttributeMaxValueLength {
+			t.Errorf("AttrPCIDevice length = %d, want %d", len(*v.StringValue), resourceapi.DeviceAttributeMaxValueLength)
+		}
+		if *v.StringValue != longName[:resourceapi.DeviceAttributeMaxValueLength] {
+			t.Errorf("AttrPCIDevice = %q, want prefix of long name", *v.StringValue)
+		}
+	})
+
 	t.Run("does not overwrite existing attributes", func(t *testing.T) {
 		devices := []resourceapi.Device{
 			{

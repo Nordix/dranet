@@ -868,7 +868,22 @@ func (db *DB) addPCIAttributes(devices []resourceapi.Device, pciInfo *ghw.PCIInf
 			devices[i].Attributes[apis.AttrPCIVendor] = resourceapi.DeviceAttribute{StringValue: &pciDev.Vendor.Name}
 		}
 		if _, hasAttr := devices[i].Attributes[apis.AttrPCIDevice]; !hasAttr && pciDev.Product != nil {
-			devices[i].Attributes[apis.AttrPCIDevice] = resourceapi.DeviceAttribute{StringValue: &pciDev.Product.Name}
+			productName := pciDev.Product.Name
+
+			if len(productName) > resourceapi.DeviceAttributeMaxValueLength {
+				klog.V(4).Infof(
+					"Truncating PCI device name %q from %d to %d bytes",
+					productName,
+					len(productName),
+					resourceapi.DeviceAttributeMaxValueLength,
+				)
+
+				productName = productName[:resourceapi.DeviceAttributeMaxValueLength]
+			}
+
+			devices[i].Attributes[apis.AttrPCIDevice] = resourceapi.DeviceAttribute{
+				StringValue: &productName,
+			}
 		}
 		if _, hasAttr := devices[i].Attributes[apis.AttrPCISubsystem]; !hasAttr && pciDev.Subsystem != nil {
 			devices[i].Attributes[apis.AttrPCISubsystem] = resourceapi.DeviceAttribute{StringValue: &pciDev.Subsystem.ID}
