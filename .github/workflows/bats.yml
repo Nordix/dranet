@@ -57,6 +57,26 @@ jobs:
           # Clean
           sudo rm -rf "${TMP_DIR}"
 
+      - name: Fetch bpftool
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Authenticated download: anonymous release fetches from shared
+          # runner addresses are unreliable and have failed the bpf tests.
+          # The release CDN can still return errors, so retry a few times.
+          for attempt in 1 2 3; do
+            if gh release download v7.5.0 -R libbpf/bpftool -p 'bpftool-v7.5.0-amd64.tar.gz' -O "$RUNNER_TEMP/bpftool.tgz" --clobber; then
+              break
+            fi
+            if [ "$attempt" = "3" ]; then
+              echo "bpftool download failed after 3 attempts" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          tar -xzf "$RUNNER_TEMP/bpftool.tgz" -C tests
+          chmod +x tests/bpftool
+
       - name: Setup Bats and bats libs
         id: setup-bats
         uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0

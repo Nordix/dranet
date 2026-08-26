@@ -24,4 +24,6 @@ vendor/
 go.work
 
 /bin
+.idea
 .vscode
+tests/bpftool

@@ -127,6 +127,9 @@ spec:
               mountPropagation: HostToContainer
             - name: dranet-run
               mountPath: /var/run/dranet
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: device-plugin
           hostPath:
@@ -150,3 +153,6 @@ spec:
           hostPath:
             path: /var/run/dranet
             type: DirectoryOrCreate
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
