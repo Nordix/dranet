@@ -26,6 +26,9 @@ The following table lists the configurable parameters and their default values:
 | `logVerbosity` | Log verbosity level | `4` |
 | `metricsPort` | Port for the metrics/healthz server and readiness probe | binary default: `9177` |
 | `metricsPath` | HTTP path for the startup and readiness probes | `/healthz` |
+| `kubeletRootDir` | Kubelet data directory (its `--root-dir`), used for both the hostPath and mountPath of the plugin/registration sockets | `/var/lib/kubelet` |
+| `nodeSelector` | Node selector for the DaemonSet pods | `{}` |
+| `affinity` | Affinity rules for the DaemonSet pods | `{}` |
 | `tolerations` | Pod tolerations | `[{operator: Exists, effect: NoSchedule}]` |
 | `resources.requests.cpu` | CPU resource request | `100m` |
 | `resources.requests.memory` | Memory resource request | `50Mi` |
