@@ -123,11 +123,20 @@ helm-push: helm-package
 kind-cluster:
 	kind create cluster --name dra --config kind.yaml
 
-kind-image: image-build
+kind-install: image-build
 	docker tag ${IMAGE} registry.k8s.io/networking/dranet:stable
 	kind load docker-image registry.k8s.io/networking/dranet:stable --name dra
 	kubectl delete -f install.yaml || true
 	kubectl apply -f install.yaml
+
+kind-install-helm: image-build ensure-helm
+	kind load docker-image ${IMAGE} --name dra
+	helm uninstall dranet --namespace kube-system || true
+	helm upgrade --install dranet deployments/helm/dranet \
+		--namespace kube-system \
+		--set image.repository=$(REGISTRY)/$(IMAGE_NAME) \
+		--set image.tag=$(TAG) \
+		--set image.pullPolicy=Never
 
 # The main release target, which pushes all images and helm charts.
 release: image-push helm-push
