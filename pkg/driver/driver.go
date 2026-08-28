@@ -124,6 +124,10 @@ type NetworkDriver struct {
 	// kubelet runs with a non-default --root-dir.
 	kubeletRootDir string
 
+	// health tracks the per-device health reported to the kubelet via
+	// WatchHealthStatus. See health.go.
+	health healthTracker
+
 	clock clock.WithTicker // Injectable clock for testing
 }
 
@@ -152,6 +156,7 @@ func Start(ctx context.Context, driverName string, kubeClient kubernetes.Interfa
 		rdmaSharedMode: rdmaNetnsMode == apis.RdmaNetnsModeShared,
 		clock:          clock.RealClock{},
 		eventRecorder:  eventRecorder,
+		health:         newHealthTracker(),
 	}
 
 	for _, o := range opts {
@@ -192,7 +197,7 @@ func Start(ctx context.Context, driverName string, kubeClient kubernetes.Interfa
 		kubeletplugin.KubeClient(kubeClient),
 		kubeletplugin.RegistrarDirectoryPath(filepath.Join(plugin.kubeletRootDir, "plugins_registry")),
 		kubeletplugin.PluginDataDirectoryPath(driverPluginPath),
-		kubeletplugin.HealthService(false),
+		kubeletplugin.HealthService(true),
 	}
 	d, err := kubeletplugin.Start(ctx, plugin, kubeletOpts...)
 	if err != nil {
@@ -265,6 +270,11 @@ func Start(ctx context.Context, driverName string, kubeClient kubernetes.Interfa
 	// publish available resources
 	go plugin.PublishResources(ctx)
 
+	// periodically (every healthResendInterval) resend device health so the
+	// kubelet's lease on it does not expire (see WatchHealthStatus in health.go)
+	plugin.health.wg.Add(1)
+	go plugin.healthResendLoop(ctx)
+
 	return plugin, nil
 }
 
@@ -291,6 +301,13 @@ func Start(ctx context.Context, driverName string, kubeClient kubernetes.Interfa
 //  3. Finally, it cancels the top-level context and stops the NRI plugin stub.
 func (np *NetworkDriver) Stop(ctxCancel context.CancelFunc) {
 	klog.Info("Stopping driver...")
+
+	// Stop the periodic health resend loop and any active WatchHealthStatus
+	// subscribers before halting the DRA plugin.
+	if np.health.stopCh != nil {
+		close(np.health.stopCh)
+		np.health.wg.Wait()
+	}
 
 	// Step 1: Halt the DRA plugin.
 	// This stops the driver from handling new NodePrepareResources requests,

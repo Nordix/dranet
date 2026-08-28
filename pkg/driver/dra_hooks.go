@@ -78,6 +78,10 @@ func (np *NetworkDriver) PublishResources(ctx context.Context) {
 
 			np.publishResourcesPrometheusMetrics(filtered)
 
+			// Reconcile per-device health from the current link state and
+			// notify any active WatchHealthStatus subscribers.
+			np.syncDeviceHealth(filtered)
+
 			resources := resourceslice.DriverResources{
 				Pools: map[string]resourceslice.Pool{
 					np.nodeName: {Slices: []resourceslice.Slice{{Devices: filtered}}},
@@ -540,15 +544,6 @@ func (np *NetworkDriver) HandleError(ctx context.Context, err error, msg string)
 	// For now we just follow the advice documented in the DRAPlugin API docs.
 	// See: https://pkg.go.dev/k8s.io/apimachinery/pkg/util/runtime#HandleErrorWithContext
 	runtime.HandleErrorWithContext(ctx, err, msg)
-}
-
-// WatchHealthStatus implements the DRAPlugin contract, which requires this
-// method as of Kubernetes 1.37:
-// https://github.com/kubernetes/kubernetes/pull/139477
-// DRANET disables the optional health service, so this method is not called.
-// TODO: This function should be implemented as part of https://github.com/kubernetes-sigs/dranet/issues/293
-func (np *NetworkDriver) WatchHealthStatus(context.Context, chan<- kubeletplugin.DeviceHealthReport) error {
-	return kubeletplugin.ErrHealthNotSupported
 }
 
 func formatDeviceNames(devices []resourceapi.Device, max int) string {

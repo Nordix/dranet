@@ -91,3 +91,14 @@ status:
   - name: pod3
     resource: pods
 ```
+
+### Device Health Reporting
+
+In addition to the per-claim `conditions` above, DRANET reports the health of every device it manages to the kubelet over the DRA `WatchHealthStatus` gRPC API (see [KEP-4680](https://github.com/kubernetes/enhancements/blob/master/keps/sig-node/4680-add-resource-health-to-pod-status/README.md)). The kubelet surfaces this in `pod.status.containerStatuses[].allocatedResourcesStatus` for devices allocated to a pod's containers.
+
+A device's health is derived from its link operational state (the same state published in the device's `state` attribute):
+
+* **`Healthy`**: the device's link operational state is `up`; the device has no known state (for example, non-network PCI devices); or the state itself is `unknown` (reported by some drivers and virtual/passthrough NICs that don't implement carrier detection).
+* **`Unhealthy`**: the device's link operational state is definitively down (for example `down`, `lower-layer-down`, `dormant`, or `testing`).
+* **`Unknown`**: reported by the kubelet itself, not DRANET, when it stops receiving health updates for a device (for example, if the driver process is down).
+
