@@ -529,6 +529,14 @@ func (db *DB) addRDMAAttributes(devices []resourceapi.Device) []resourceapi.Devi
 }
 
 func (db *DB) addCloudAttributes(devices []resourceapi.Device) []resourceapi.Device {
+	// No cloud provider was detected/configured for this node (e.g. bare-metal
+	// deployments). This is an expected, permanent condition, so log it once at
+	// a low verbosity instead of once per device on every scan cycle.
+	if db.instance == nil {
+		klog.V(4).Infof("no cloud instance metadata available, skipping provider attributes for %d device(s)", len(devices))
+		return devices
+	}
+
 	for i := range devices {
 		device := &devices[i]
 		maps.Copy(device.Attributes, db.getProviderAttributes(device, db.instance))
@@ -537,11 +545,6 @@ func (db *DB) addCloudAttributes(devices []resourceapi.Device) []resourceapi.Dev
 }
 
 func (db *DB) getProviderAttributes(device *resourceapi.Device, instance cloudprovider.CloudInstance) map[resourceapi.QualifiedName]resourceapi.DeviceAttribute {
-	if instance == nil {
-		klog.Warningf("instance metadata is nil, cannot get provider attributes.")
-		return nil
-	}
-
 	if device == nil {
 		klog.Warningf("device is nil, cannot get provider attributes.")
 		return nil
