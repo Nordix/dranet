@@ -20,19 +20,27 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 
 	resourceapi "k8s.io/api/resource/v1"
+	"sigs.k8s.io/dranet/internal/nlwrap"
 	"sigs.k8s.io/dranet/pkg/apis"
 	"sigs.k8s.io/dranet/pkg/cloudprovider"
+	"sigs.k8s.io/dranet/pkg/inventory"
+	"sigs.k8s.io/dranet/pkg/ipam"
 )
 
 const (
@@ -46,12 +54,20 @@ const (
 	imdsTokenTTL  = "21600"
 )
 
-var _ cloudprovider.CloudInstance = (*AlibabaInstance)(nil)
+var (
+	_ cloudprovider.CloudInstance   = (*AlibabaInstance)(nil)
+	_ cloudprovider.ProfileProvider = (*AlibabaInstance)(nil)
+)
 
 type AlibabaInstance struct {
 	InstanceType      string
 	ERDMAPCIAddresses sets.Set[string]
+
+	// localIPAM is seeded with addresses restored from the driver checkpoint.
+	localIPAM *ipam.LocalIPAM
 }
+
+const alibabaEfloSubinterfaceProfile = "alibaba-eflo-subinterface"
 
 // OnAlibaba returns true if running on an Alibaba Cloud ECS instance.
 func OnAlibaba(ctx context.Context) bool {
@@ -77,7 +93,7 @@ func OnAlibaba(ctx context.Context) bool {
 }
 
 // GetInstance retrieves Alibaba Cloud instance metadata via IMDS.
-func GetInstance(ctx context.Context) (cloudprovider.CloudInstance, error) {
+func GetInstance(ctx context.Context, opts ...Option) (cloudprovider.CloudInstance, error) {
 	instanceType, err := queryIMDS(ctx, "/meta-data/instance/instance-type")
 	if err != nil {
 		klog.Infof("could not get Alibaba instance type: %v", err)
@@ -86,10 +102,23 @@ func GetInstance(ctx context.Context) (cloudprovider.CloudInstance, error) {
 	erdmaPCIAddresses := detectERDMAPCIAddresses()
 	klog.Infof("Alibaba Cloud instance: type=%q erdma=%v", instanceType, erdmaPCIAddresses.UnsortedList())
 
-	return &AlibabaInstance{
+	instance := &AlibabaInstance{
 		InstanceType:      instanceType,
 		ERDMAPCIAddresses: erdmaPCIAddresses,
-	}, nil
+		localIPAM:         ipam.NewLocalIPAM(nil),
+	}
+	for _, opt := range opts {
+		opt(instance)
+	}
+	return instance, nil
+}
+
+type Option func(*AlibabaInstance)
+
+func WithReservedAddresses(addrs []string) Option {
+	return func(instance *AlibabaInstance) {
+		instance.localIPAM = ipam.NewLocalIPAM(addrs)
+	}
 }
 
 func (a *AlibabaInstance) GetDeviceAttributes(id cloudprovider.DeviceIdentifiers) map[resourceapi.QualifiedName]resourceapi.DeviceAttribute {
@@ -105,7 +134,265 @@ func (a *AlibabaInstance) GetDeviceAttributes(id cloudprovider.DeviceIdentifiers
 }
 
 func (a *AlibabaInstance) GetDeviceConfig(id cloudprovider.DeviceIdentifiers) *apis.NetworkConfig {
+	// Moving an LACP bond into a pod netns would break link aggregation. Only
+	// eFLO RDMA bonds are served through a subinterface, which requires the
+	// IPv6 address the block is derived from; an IPv4-only bond is not an eFLO
+	// device and keeps the default handling.
+	if id.Name == "" || !inventory.IsLACPBond(id.Name) || !hasEfloIPv6(id.Name) {
+		return nil
+	}
+
+	return &apis.NetworkConfig{
+		Profile: alibabaEfloSubinterfaceProfile,
+		Interface: apis.InterfaceConfig{
+			Type: apis.InterfaceTypeIPVLAN,
+		},
+	}
+}
+
+// GetProfileConfig allocates an eFLO subinterface address.
+func (a *AlibabaInstance) GetProfileConfig(id cloudprovider.DeviceIdentifiers, claim *resourceapi.ResourceClaim, config *apis.NetworkConfig) (*apis.NetworkConfig, error) {
+	if config == nil || !config.Interface.IsSubinterface() {
+		return nil, nil
+	}
+	if a.localIPAM == nil {
+		return nil, fmt.Errorf("alibaba profile IPAM is not initialized for subinterface device %q", id.Name)
+	}
+
+	prefix, parentRoutes, err := getNICIPv6Config(id.Name)
+	if err != nil {
+		return nil, fmt.Errorf("determining eflo RDMA IPv6 config for device %q: %w", id.Name, err)
+	}
+
+	if len(config.Interface.Addresses) > 0 {
+		if err := a.localIPAM.Reserve(config.Interface.Addresses); err != nil {
+			return nil, fmt.Errorf("reserving static subinterface addresses for device %q: %w", id.Name, err)
+		}
+		return efloSourceRoutingConfig(id.Name, config, nil, parentRoutes), nil
+	}
+
+	ranges, err := a.subinterfaceRanges(id.Name, prefix)
+	if err != nil {
+		return nil, err
+	}
+	addrs, err := a.localIPAM.Allocate(ranges)
+	if err != nil {
+		return nil, fmt.Errorf("allocating subinterface addresses for device %q: %w", id.Name, err)
+	}
+	return efloSourceRoutingConfig(id.Name, config, addrs, parentRoutes), nil
+}
+
+// efloSourceRoutingConfig returns the allocated addresses plus PBR for them:
+// the parent's IPv6 routes moved to a per-device table and one source rule
+// per address. If the merged config already defines routes, rules or a VRF,
+// routing is user-owned and nothing is synthesized.
+func efloSourceRoutingConfig(ifName string, config *apis.NetworkConfig, allocated []string, parentRoutes []apis.RouteConfig) *apis.NetworkConfig {
+	profile := &apis.NetworkConfig{Interface: apis.InterfaceConfig{Addresses: allocated}}
+
+	addrs := allocated
+	if len(addrs) == 0 {
+		addrs = config.Interface.Addresses
+	}
+	if len(config.Routes) > 0 || len(config.Rules) > 0 || config.Interface.VRF != nil {
+		if len(allocated) == 0 {
+			return nil
+		}
+		return profile
+	}
+
+	tableID := apis.TableIDForName(ifName)
+	for i := range parentRoutes {
+		route := parentRoutes[i]
+		route.Table = tableID
+		profile.Routes = append(profile.Routes, route)
+	}
+	for _, addrStr := range addrs {
+		prefix, err := netip.ParsePrefix(addrStr)
+		if err != nil {
+			continue
+		}
+		// Host prefix so rules for sibling subinterfaces never overlap.
+		profile.Rules = append(profile.Rules, apis.RuleConfig{
+			Source:   netip.PrefixFrom(prefix.Addr(), prefix.Addr().BitLen()).String(),
+			Table:    tableID,
+			Priority: apis.SourceRoutingRulePriority,
+		})
+	}
+	if len(allocated) == 0 && len(profile.Routes) == 0 && len(profile.Rules) == 0 {
+		return nil
+	}
+	return profile
+}
+
+// ReleaseProfileConfig releases subinterface addresses.
+func (a *AlibabaInstance) ReleaseProfileConfig(id cloudprovider.DeviceIdentifiers, claimUID types.UID, config *apis.NetworkConfig) error {
+	if config == nil || !config.Interface.IsSubinterface() || a.localIPAM == nil {
+		return nil
+	}
+	for _, addr := range config.Interface.Addresses {
+		a.localIPAM.Release(addr)
+	}
 	return nil
+}
+
+func (a *AlibabaInstance) subinterfaceRanges(bondName string, prefix *net.IPNet) ([]ipam.IPRange, error) {
+	cidr, err := efloRDMASubinterfaceRange(prefix)
+	if err != nil {
+		return nil, fmt.Errorf("deriving eflo RDMA subinterface range for bond %s: %w", bondName, err)
+	}
+	start, end, err := cloudprovider.IPRangeFromCIDR(cidr, 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("deriving allocation range from %q: %w", cidr, err)
+	}
+	return []ipam.IPRange{{Start: start, End: end}}, nil
+}
+
+// hasEfloIPv6 reports whether ifName carries the IPv6 address the eFLO
+// subinterface block is derived from. Link-local addresses are never usable
+// for this, and neither is an IPv4-only interface.
+func hasEfloIPv6(ifName string) bool {
+	link, err := nlwrap.LinkByName(ifName)
+	if err != nil {
+		return false
+	}
+	addrs, err := nlwrap.AddrList(link, netlink.FAMILY_V6)
+	if err != nil {
+		return false
+	}
+	for _, addr := range addrs {
+		if !addr.IP.IsGlobalUnicast() {
+			continue
+		}
+		if ones, bits := addr.Mask.Size(); bits == 128 && ones <= 124 {
+			return true
+		}
+	}
+	return false
+}
+
+// eFLO reserves 0000:000f:0000:0c00/124 within each RDMA NIC's IPv6 network.
+var efloRDMABlockSuffix = [8]byte{0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x0c, 0x00}
+
+func efloRDMASubinterfaceRange(prefix *net.IPNet) (string, error) {
+	ones, bits := prefix.Mask.Size()
+	if bits != 128 {
+		return "", fmt.Errorf("address %s is not IPv6", prefix)
+	}
+	if ones > 124 {
+		return "", fmt.Errorf("expected prefix length <= /124 for eFLO range, got /%d for %s", ones, prefix)
+	}
+
+	pattern := make(net.IP, net.IPv6len)
+	copy(pattern[8:], efloRDMABlockSuffix[:])
+
+	rangeIP := make(net.IP, 16)
+	prefixIP := prefix.IP.To16()
+	if prefixIP == nil {
+		return "", fmt.Errorf("invalid IPv6 prefix %s", prefix)
+	}
+	copy(rangeIP, prefixIP)
+	for i := ones; i < 124; i++ {
+		if getIPBit(pattern, i) {
+			setIPBit(rangeIP, i, true)
+		} else {
+			setIPBit(rangeIP, i, false)
+		}
+	}
+
+	return (&net.IPNet{IP: rangeIP, Mask: net.CIDRMask(124, 128)}).String(), nil
+}
+
+func getIPBit(ip net.IP, i int) bool {
+	byteOffset := i / 8
+	bitOffset := uint(7 - i%8)
+	return ip[byteOffset]&(1<<bitOffset) != 0
+}
+
+func setIPBit(ip net.IP, i int, set bool) {
+	byteOffset := i / 8
+	bitOffset := uint(7 - i%8)
+	if set {
+		ip[byteOffset] |= 1 << bitOffset
+	} else {
+		ip[byteOffset] &^= 1 << bitOffset
+	}
+}
+
+// getNICIPv6Config returns the global IPv6 prefix (<= /124) of ifName together
+// with its IPv6 routes, which seed the eFLO subinterface source-routing config.
+func getNICIPv6Config(ifName string) (*net.IPNet, []apis.RouteConfig, error) {
+	link, err := nlwrap.LinkByName(ifName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("could not find interface %s: %w", ifName, err)
+	}
+	addrs, err := nlwrap.AddrList(link, netlink.FAMILY_V6)
+	if err != nil {
+		return nil, nil, fmt.Errorf("could not list IPv6 addresses for %s: %w", ifName, err)
+	}
+	var parentIP net.IP
+	var prefix *net.IPNet
+	for _, addr := range addrs {
+		if !addr.IP.IsGlobalUnicast() {
+			continue
+		}
+		ones, bits := addr.Mask.Size()
+		if bits != 128 || ones > 124 {
+			continue
+		}
+		parentIP = addr.IP
+		prefix = &net.IPNet{IP: addr.IP.Mask(addr.Mask), Mask: addr.Mask}
+		break
+	}
+	if parentIP == nil {
+		return nil, nil, fmt.Errorf("no global IPv6 address with prefix length <= /124 found on %s", ifName)
+	}
+	filter := &netlink.Route{LinkIndex: link.Attrs().Index}
+	routes, err := nlwrap.RouteListFiltered(netlink.FAMILY_V6, filter, netlink.RT_FILTER_OIF)
+	if err != nil {
+		return nil, nil, err
+	}
+	result, err := efloRouteConfigs(ifName, routes)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(result) == 0 {
+		return nil, nil, fmt.Errorf("no IPv6 routes found on %s", ifName)
+	}
+	return prefix, result, nil
+}
+
+func efloRouteConfigs(ifName string, routes []netlink.Route) ([]apis.RouteConfig, error) {
+	result := make([]apis.RouteConfig, 0, len(routes)+1)
+	gateways := sets.New[string]()
+	for _, route := range routes {
+		if route.Dst == nil {
+			continue
+		}
+		if route.Gw == nil {
+			result = append(result, apis.RouteConfig{
+				Destination: route.Dst.String(),
+				Scope:       unix.RT_SCOPE_LINK,
+			})
+			continue
+		}
+		gateway := route.Gw.String()
+		if !gateways.Has(gateway) {
+			gatewayAddr, err := netip.ParseAddr(gateway)
+			if err != nil {
+				return nil, fmt.Errorf("invalid IPv6 gateway %q on %s: %w", gateway, ifName, err)
+			}
+			result = append(result, apis.RouteConfig{
+				Destination: netip.PrefixFrom(gatewayAddr, 128).String(),
+				Scope:       unix.RT_SCOPE_LINK,
+			})
+			gateways.Insert(gateway)
+		}
+		result = append(result, apis.RouteConfig{
+			Destination: route.Dst.String(),
+			Gateway:     gateway,
+		})
+	}
+	return result, nil
 }
 
 // detectERDMAPCIAddresses returns the PCI addresses of eRDMA devices found in

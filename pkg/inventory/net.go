@@ -215,3 +215,20 @@ func getTcxFilters(device netlink.Link) ([]string, bool) {
 	}
 	return programNames.UnsortedList(), isTcxEBPF
 }
+
+// IsLACPBond reports whether ifName is an 802.3ad (LACP) bond.
+func IsLACPBond(ifName string) bool {
+	link, err := nlwrap.LinkByName(ifName)
+	if err != nil {
+		klog.Errorf("failed to get interface %s: %v", ifName, err)
+		return false
+	}
+
+	bond, ok := link.(*netlink.Bond)
+	if !ok {
+		// Not a bonding interface.
+		return false
+	}
+
+	return bond.Mode == netlink.BOND_MODE_802_3AD
+}
