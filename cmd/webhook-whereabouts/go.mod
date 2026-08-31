@@ -6,8 +6,8 @@ replace sigs.k8s.io/dranet => ../..
 
 require (
 	github.com/containernetworking/cni v1.3.0
-	k8s.io/api v0.37.0-rc.0
-	k8s.io/apimachinery v0.37.0-rc.0
+	k8s.io/api v0.37.0
+	k8s.io/apimachinery v0.37.0
 	sigs.k8s.io/dranet v0.0.0-00010101000000-000000000000
 )
 

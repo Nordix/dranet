@@ -15,7 +15,7 @@ make kind-cluster
    cluster
 
 ```
-make kind-image
+make kind-install
 ```
 
 3. Test your changes locally, use the [examples folder](./examples) for dropping manifests
