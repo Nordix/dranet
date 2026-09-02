@@ -84,7 +84,7 @@ func init() {
 	flag.DurationVar(&maxPollInterval, "inventory-max-poll-interval", 1*time.Minute, "The maximum interval between two consecutive polls of the inventory.")
 	flag.IntVar(&pollBurst, "inventory-poll-burst", 5, "The number of polls that can be run in a burst.")
 	flag.BoolVar(&moveIBInterfaces, "move-ib-interfaces", true, "If true, InfiniBand (IPoIB) network interfaces associated with PCI devices are moved into pod network namespace. If false, moving IB network interfaces are skipped and the underlying device is exposed as an IB-only RDMA device.")
-	flag.StringVar(&cloudProviderHint, "cloud-provider-hint", "", "Hint for the cloud provider that will be used to select the appropriate provider plugin. Supported values: (AWS, GCE, AZURE, OKE, ALIBABA, webhook, NONE). If left unset, the cloud provider is auto-detected.")
+	flag.StringVar(&cloudProviderHint, "cloud-provider-hint", "", "Hint for the cloud provider that will be used to select the appropriate provider plugin. Supported values: (AWS, GCE, AZURE, OKE, ALIBABA, CKS, webhook, NONE). If left unset, the cloud provider is auto-detected.")
 	flag.StringVar(&profileProvider, "profile-provider", "cloud", "Provides user intent (cloud, webhook, none). 'cloud' falls back to the cloud-provider's native implementation.")
 	flag.StringVar(&webhookURL, "webhook-url", "", "URL for the webhook provider (required if using webhook for either provider)")
 	flag.StringVar(&kubeletRootDir, "kubelet-root-dir", "/var/lib/kubelet", "The kubelet data directory (its --root-dir). The driver's registration socket lives under <dir>/plugins_registry and its dra.sock under <dir>/plugins/<driver-name>. Set this to match the kubelet --root-dir on clusters that relocate it.")
@@ -192,7 +192,16 @@ func main() {
 		}
 		opts = append(opts, driver.WithFilter(prg))
 	}
-	cloudInst, profProv, err := setupProviders(ctx, cloudProviderHint, profileProvider, webhookURL)
+	providerOpts := providerOptions{
+		cloudProviderHint: cloudProviderHint,
+		profileProvider:   profileProvider,
+		webhookURL:        webhookURL,
+		dependencies: discovery.Dependencies{
+			NodeClient: clientset.CoreV1().Nodes(),
+			NodeName:   nodeName,
+		},
+	}
+	cloudInst, profProv, err := setupProviders(ctx, providerOpts)
 	if err != nil {
 		klog.Fatalf("failed to setup providers: %v", err)
 	}
@@ -249,28 +258,35 @@ func printVersion() {
 	klog.Infof("dranet go %s build: %s time: %s", info.GoVersion, vcsRevision, vcsTime)
 }
 
-func setupProviders(ctx context.Context, cloudProviderHint string, profileProvider string, webhookURL string) (cloudprovider.CloudInstance, cloudprovider.ProfileProvider, error) {
+type providerOptions struct {
+	cloudProviderHint string
+	profileProvider   string
+	webhookURL        string
+	dependencies      discovery.Dependencies
+}
+
+func setupProviders(ctx context.Context, opts providerOptions) (cloudprovider.CloudInstance, cloudprovider.ProfileProvider, error) {
 	var cloudInst cloudprovider.CloudInstance
 	var profProv cloudprovider.ProfileProvider
 	var err error
 
 	var hint discovery.CloudProviderHint
 	// Auto-discover cloud provider if not explicitly set
-	if cloudProviderHint == "" {
-		hint = discovery.DiscoverCloudProvider(ctx, webhookURL)
+	if opts.cloudProviderHint == "" {
+		hint = discovery.DiscoverCloudProvider(ctx, opts.webhookURL, opts.dependencies)
 	} else {
-		hint = discovery.CloudProviderHint(cloudProviderHint)
+		hint = discovery.CloudProviderHint(opts.cloudProviderHint)
 	}
 
 	// Setup the Underlay (Hardware Discovery / Cloud Instance Info)
-	cloudInst, err = discovery.GetInstanceProperties(ctx, hint, webhookURL)
+	cloudInst, err = discovery.GetInstanceProperties(ctx, hint, opts.webhookURL, opts.dependencies)
 	if err != nil {
 		klog.Infof("failed to initialize cloud provider %q: %v", hint, err)
 		cloudInst = nil
 	}
 
 	// Setup the Overlay (Profile Provider / User Intent)
-	switch profileProvider {
+	switch opts.profileProvider {
 	case "cloud":
 		if p, ok := cloudInst.(cloudprovider.ProfileProvider); ok {
 			profProv = p
@@ -278,27 +294,27 @@ func setupProviders(ctx context.Context, cloudProviderHint string, profileProvid
 			profProv = nil
 		}
 	case "webhook":
-		if webhookURL == "" {
+		if opts.webhookURL == "" {
 			return nil, nil, fmt.Errorf("--webhook-url is required when using the webhook profile provider")
 		}
 		var wh *webhook.WebhookProvider
 		if existing, ok := cloudInst.(*webhook.WebhookProvider); ok {
 			wh = existing
 		} else {
-			wh, err = webhook.NewWebhookProvider(ctx, webhookURL)
+			wh, err = webhook.NewWebhookProvider(ctx, opts.webhookURL)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to initialize webhook profile provider: %v", err)
 			}
 		}
 
 		if !wh.HasProfileProvider() {
-			return nil, nil, fmt.Errorf("webhook at %q does not support ProfileProvider capability", webhookURL)
+			return nil, nil, fmt.Errorf("webhook at %q does not support ProfileProvider capability", opts.webhookURL)
 		}
 		profProv = wh
 	case "none":
 		profProv = nil
 	default:
-		return nil, nil, fmt.Errorf("unsupported profile provider: %s", profileProvider)
+		return nil, nil, fmt.Errorf("unsupported profile provider: %s", opts.profileProvider)
 	}
 
 	return cloudInst, profProv, nil

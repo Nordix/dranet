@@ -21,10 +21,12 @@ import (
 	"fmt"
 
 	"cloud.google.com/go/compute/metadata"
+	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	"sigs.k8s.io/dranet/pkg/cloudprovider"
 	"sigs.k8s.io/dranet/pkg/cloudprovider/alibaba"
 	"sigs.k8s.io/dranet/pkg/cloudprovider/aws"
 	"sigs.k8s.io/dranet/pkg/cloudprovider/azure"
+	"sigs.k8s.io/dranet/pkg/cloudprovider/coreweave"
 	"sigs.k8s.io/dranet/pkg/cloudprovider/gce"
 	"sigs.k8s.io/dranet/pkg/cloudprovider/oke"
 	"sigs.k8s.io/dranet/pkg/cloudprovider/webhook"
@@ -38,35 +40,57 @@ const (
 	CloudProviderHintAzure   CloudProviderHint = "AZURE"
 	CloudProviderHintOKE     CloudProviderHint = "OKE"
 	CloudProviderHintAlibaba CloudProviderHint = "ALIBABA"
+	CloudProviderHintCKS     CloudProviderHint = "CKS"
 	CloudProviderHintWebhook CloudProviderHint = "webhook"
 	CloudProviderHintNone    CloudProviderHint = "NONE"
 )
 
-// DiscoverCloudProvider probes the environment to detect which cloud provider DRANET is running on.
-func DiscoverCloudProvider(ctx context.Context, webhookURL string) CloudProviderHint {
-	if metadata.OnGCE() {
-		return CloudProviderHintGCE
+// Dependencies contains Kubernetes-local inputs used by providers that do not
+// expose a conventional instance metadata service.
+type Dependencies struct {
+	NodeClient corev1client.NodeInterface
+	NodeName   string
+}
+
+type cloudProviderProbe struct {
+	hint  CloudProviderHint
+	match func() bool
+}
+
+// DiscoverCloudProvider probes the environment using additional Kubernetes-local
+// provider inputs when available to detect which cloud provider DRANET is running on.
+func DiscoverCloudProvider(ctx context.Context, webhookURL string, dependencies Dependencies) CloudProviderHint {
+	return detectCloudProvider(cloudProviderProbes(ctx, webhookURL, dependencies))
+}
+
+func cloudProviderProbes(ctx context.Context, webhookURL string, dependencies Dependencies) []cloudProviderProbe {
+	return []cloudProviderProbe{
+		{hint: CloudProviderHintGCE, match: metadata.OnGCE},
+		{hint: CloudProviderHintAWS, match: func() bool { return aws.OnAWS(ctx) }},
+		{hint: CloudProviderHintAzure, match: func() bool { return azure.OnAzure(ctx) }},
+		{hint: CloudProviderHintOKE, match: func() bool { return oke.OnOKE(ctx) }},
+		{hint: CloudProviderHintAlibaba, match: func() bool { return alibaba.OnAlibaba(ctx) }},
+		{hint: CloudProviderHintCKS, match: func() bool {
+			return coreweave.OnCKS(ctx, dependencies.NodeClient, dependencies.NodeName)
+		}},
+		{hint: CloudProviderHintWebhook, match: func() bool {
+			return webhookURL != "" && webhook.OnWebhook(ctx, webhookURL)
+		}},
 	}
-	if aws.OnAWS(ctx) {
-		return CloudProviderHintAWS
-	}
-	if azure.OnAzure(ctx) {
-		return CloudProviderHintAzure
-	}
-	if oke.OnOKE(ctx) {
-		return CloudProviderHintOKE
-	}
-	if alibaba.OnAlibaba(ctx) {
-		return CloudProviderHintAlibaba
-	}
-	if webhookURL != "" && webhook.OnWebhook(ctx, webhookURL) {
-		return CloudProviderHintWebhook
+}
+
+func detectCloudProvider(probes []cloudProviderProbe) CloudProviderHint {
+	for _, probe := range probes {
+		if probe.match() {
+			return probe.hint
+		}
 	}
 	return CloudProviderHintNone
 }
 
-// GetInstanceProperties initializes and returns the specified cloud provider instance.
-func GetInstanceProperties(ctx context.Context, hint CloudProviderHint, webhookURL string) (cloudprovider.CloudInstance, error) {
+// GetInstanceProperties initializes the specified cloud provider using additional
+// Kubernetes-local provider inputs when available.
+func GetInstanceProperties(ctx context.Context, hint CloudProviderHint, webhookURL string, dependencies Dependencies) (cloudprovider.CloudInstance, error) {
 	switch hint {
 	case CloudProviderHintGCE:
 		return gce.GetInstance(ctx)
@@ -78,6 +102,8 @@ func GetInstanceProperties(ctx context.Context, hint CloudProviderHint, webhookU
 		return oke.GetInstance(ctx)
 	case CloudProviderHintAlibaba:
 		return alibaba.GetInstance(ctx)
+	case CloudProviderHintCKS:
+		return coreweave.GetInstance(ctx, dependencies.NodeClient, dependencies.NodeName)
 	case CloudProviderHintWebhook:
 		if webhookURL == "" {
 			return nil, fmt.Errorf("--webhook-url is required when using the webhook cloud provider")
