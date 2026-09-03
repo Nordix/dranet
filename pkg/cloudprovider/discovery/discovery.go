@@ -103,7 +103,7 @@ func GetInstanceProperties(ctx context.Context, hint CloudProviderHint, webhookU
 	case CloudProviderHintOKE:
 		return oke.GetInstance(ctx)
 	case CloudProviderHintAlibaba:
-		return alibaba.GetInstance(ctx)
+		return alibaba.GetInstance(ctx, alibaba.WithReservedAddresses(dependencies.ReservedAddresses))
 	case CloudProviderHintCKS:
 		return coreweave.GetInstance(ctx, dependencies.NodeClient, dependencies.NodeName)
 	case CloudProviderHintWebhook:

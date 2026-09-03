@@ -371,6 +371,45 @@ func testGetExcludedUplinkInterfaces_Namespaced(t *testing.T) {
 	}
 }
 
+func TestIsLACPBond(t *testing.T) {
+	userns.Run(t, testIsLACPBond_Namespaced, syscall.CLONE_NEWNET)
+}
+
+func testIsLACPBond_Namespaced(t *testing.T) {
+	addBond := func(name string, mode netlink.BondMode) {
+		t.Helper()
+		bond := netlink.NewLinkBond(netlink.LinkAttrs{Name: name})
+		bond.Mode = mode
+		if err := netlink.LinkAdd(bond); err != nil {
+			t.Fatalf("failed to add bond %s: %v", name, err)
+		}
+	}
+
+	addBond("lacp0", netlink.BOND_MODE_802_3AD)
+	addBond("backup0", netlink.BOND_MODE_ACTIVE_BACKUP)
+	dummy := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "dummy0"}}
+	if err := netlink.LinkAdd(dummy); err != nil {
+		t.Fatalf("failed to add dummy0: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{name: "lacp0", want: true},
+		{name: "backup0"},
+		{name: "dummy0"},
+		{name: "nonexistent"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsLACPBond(tt.name); got != tt.want {
+				t.Errorf("IsLACPBond(%q) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
 // addBridgeUplink creates a bridge, assigns it an address, brings it up, and
 // installs an IPv4 default route through it so it looks like the active
 // default-gateway uplink.
