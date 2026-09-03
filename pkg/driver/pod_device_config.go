@@ -17,6 +17,7 @@ limitations under the License.
 package driver
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -120,11 +121,35 @@ type PodConfigStore struct {
 	checkpointer Checkpointer // nil when no persistence is configured
 }
 
-// NewPodConfigStore creates a new PodConfigStore. If a Checkpointer is
-// provided, existing device configs are loaded from the checkpoint into memory.
-// Pod-level state is not persisted; NetNS is rebuilt through Synchronize() on
-// driver startup, while LastNRIActivity resets to its zero value.
-func NewPodConfigStore(checkpointer Checkpointer) (*PodConfigStore, error) {
+// NewPodConfigStore creates a new PodConfigStore. If dbPath is non-empty, it
+// initializes a bbolt checkpoint backend at that path; otherwise the store is
+// in-memory only.
+func NewPodConfigStore(dbPath string) (*PodConfigStore, error) {
+	var checkpointer Checkpointer
+	if dbPath != "" {
+		cp, err := newBoltCheckpointer(dbPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open pod config database at %s: %w", dbPath, err)
+		}
+		checkpointer = cp
+	}
+
+	s, err := newPodConfigStoreWithCheckpointer(checkpointer)
+	if err != nil {
+		if checkpointer != nil {
+			checkpointer.Close()
+		}
+		return nil, err
+	}
+	return s, nil
+}
+
+// newPodConfigStoreWithCheckpointer creates a PodConfigStore backed by the given
+// checkpointer, useful for injecting a fake in tests. If a checkpointer is provided,
+// existing device configs are loaded from the checkpoint into memory. Pod-level state
+// is not persisted; NetNS is rebuilt through Synchronize() on driver startup, while
+// LastNRIActivity resets to its zero value.
+func newPodConfigStoreWithCheckpointer(checkpointer Checkpointer) (*PodConfigStore, error) {
 	s := &PodConfigStore{
 		configs:      make(map[types.UID]PodConfig),
 		checkpointer: checkpointer,
@@ -220,9 +245,9 @@ func (s *PodConfigStore) GetDeviceConfig(podUID types.UID, deviceName string) (D
 // regardless of checkpoint outcome. This asymmetry with SetDeviceConfig
 // (which aborts on checkpoint failure) is intentional:
 //   - A failed Set leaving stale RAM would silently lose config on restart (#89).
-//   - A failed Delete leaving a stale checkpoint is harmless: Synchronize()
-//     prunes orphaned checkpoint entries on the next startup by diffing
-//     against live pods from the container runtime.
+//   - A failed Delete leaving a stale checkpoint is harmless: Kubelet's DRA manager
+//     is guaranteed to retry UnprepareResourceClaims (which triggers DeletePod)
+//     until it succeeds, ensuring that the checkpoint is eventually cleaned up.
 //
 // Skipping the RAM delete would be worse — the driver would keep processing
 // a pod that the runtime has already removed.
@@ -287,8 +312,8 @@ func (s *PodConfigStore) SetPodNetNs(podUID types.UID, netns string) {
 	s.configs[podUID] = podCfg
 }
 
-// DeleteClaim removes all configurations associated with a given claim and
-// returns the list of Pod UIDs that were associated with it.
+// DeleteClaim removes all configurations and allocated IPs associated with a given
+// claim and returns the list of Pod UIDs that were associated with it.
 // Like DeletePod, checkpoint failures do not prevent in-memory cleanup.
 // See DeletePod for rationale on this intentional asymmetry with SetDeviceConfig.
 func (s *PodConfigStore) DeleteClaim(claim types.NamespacedName) []types.UID {
@@ -330,4 +355,23 @@ func (s *PodConfigStore) GetAllocatedDeviceSnapshots() []resourceapi.Device {
 		}
 	}
 	return allocated
+}
+
+// GetInUseSubinterfaceIPs returns all subinterface IP addresses
+// that are in use, collected from the stored pod configs.
+// When the node-local IPAM is initialized, this seeding ensures
+// that in-use addresses will not be reallocated again.
+func (s *PodConfigStore) GetInUseSubinterfaceIPs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var ips []string
+	for _, podCfg := range s.configs {
+		for _, devCfg := range podCfg.DeviceConfigs {
+			if devCfg.NetworkInterfaceConfigInPod.Interface.IsSubinterface() {
+				ips = append(ips, devCfg.NetworkInterfaceConfigInPod.Interface.Addresses...)
+			}
+		}
+	}
+	return ips
 }

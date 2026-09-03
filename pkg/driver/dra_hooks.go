@@ -337,7 +337,7 @@ func (np *NetworkDriver) prepareResourceClaim(ctx context.Context, claim *resour
 
 		// If DHCP is requested, do a DHCP request to gather the network parameters (IPs and Routes)
 		// ... but we DO NOT apply them in the root namespace
-		if deviceCfg.NetworkInterfaceConfigInPod.Interface.DHCP != nil && *deviceCfg.NetworkInterfaceConfigInPod.Interface.DHCP {
+		if deviceCfg.NetworkInterfaceConfigInPod.Interface.Addressing == apis.AddressingModeDHCP {
 			klog.V(2).Infof("trying to get network configuration via DHCP")
 			contextCancel, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
@@ -348,8 +348,8 @@ func (np *NetworkDriver) prepareResourceClaim(ctx context.Context, claim *resour
 				deviceCfg.NetworkInterfaceConfigInPod.Interface.Addresses = []string{ip}
 				deviceCfg.NetworkInterfaceConfigInPod.Routes = append(deviceCfg.NetworkInterfaceConfigInPod.Routes, routes...)
 			}
-		} else if len(deviceCfg.NetworkInterfaceConfigInPod.Interface.Addresses) == 0 {
-			// If there is no custom addresses and no DHCP, then use the existing ones
+		} else if !deviceCfg.NetworkInterfaceConfigInPod.Interface.IsSubinterface() && len(deviceCfg.NetworkInterfaceConfigInPod.Interface.Addresses) == 0 {
+			// For a passthrough interface with no custom addresses and no DHCP, then use the existing ones
 			// get the existing IP addresses
 			nlAddresses, err := nlHandle.AddrList(link, netlink.FAMILY_ALL)
 			if err != nil {
@@ -397,23 +397,25 @@ func (np *NetworkDriver) prepareResourceClaim(ctx context.Context, claim *resour
 			deviceCfg.NetworkInterfaceConfigInPod.Ethtool.Features = ethtoolFeatures
 		}
 
-		// Obtain the routes and rules associated with the interface.
-		routes, tables, err := getRouteInfo(nlHandle, ifName, link)
-		if err != nil {
-			errorList = append(errorList, err)
-			continue
-		}
-		deviceCfg.NetworkInterfaceConfigInPod.Routes = append(deviceCfg.NetworkInterfaceConfigInPod.Routes, routes...)
+		// For non-subinterface type, obtain the routes and rules associated with the interface.
+		if !deviceCfg.NetworkInterfaceConfigInPod.Interface.IsSubinterface() {
+			routes, tables, err := getRouteInfo(nlHandle, ifName, link)
+			if err != nil {
+				errorList = append(errorList, err)
+				continue
+			}
+			deviceCfg.NetworkInterfaceConfigInPod.Routes = append(deviceCfg.NetworkInterfaceConfigInPod.Routes, routes...)
 
-		// If VRF is enabled, we do not need to copy the rules from the host
-		// because the VRF handles the routing table lookup.
-		if deviceCfg.NetworkInterfaceConfigInPod.Interface.VRF == nil {
-			for _, table := range tables.UnsortedList() {
-				if rules, ok := rulesByTable[table]; ok {
-					klog.V(5).Infof("Adding %d rules for table %d associated with interface %s", len(rules), table, ifName)
-					deviceCfg.NetworkInterfaceConfigInPod.Rules = append(deviceCfg.NetworkInterfaceConfigInPod.Rules, rules...)
-					// Avoid adding the same rule twice
-					delete(rulesByTable, table)
+			// If VRF is enabled, we do not need to copy the rules from the host
+			// because the VRF handles the routing table lookup.
+			if deviceCfg.NetworkInterfaceConfigInPod.Interface.VRF == nil {
+				for _, table := range tables.UnsortedList() {
+					if rules, ok := rulesByTable[table]; ok {
+						klog.V(5).Infof("Adding %d rules for table %d associated with interface %s", len(rules), table, ifName)
+						deviceCfg.NetworkInterfaceConfigInPod.Rules = append(deviceCfg.NetworkInterfaceConfigInPod.Rules, rules...)
+						// Avoid adding the same rule twice
+						delete(rulesByTable, table)
+					}
 				}
 			}
 		}
@@ -438,8 +440,28 @@ func (np *NetworkDriver) prepareResourceClaim(ctx context.Context, claim *resour
 			deviceCfg.NetworkInterfaceConfigInPod.Neighbors = append(deviceCfg.NetworkInterfaceConfigInPod.Neighbors, neighCfg)
 		}
 
+		// A subinterface has no host addresses to inherit, so its addresses must
+		// come from the user config, a profile, or be explicitly waived via
+		// Addressing: Unnumbered. Routing (including any policy based routing) is
+		// owned by the user or the provider profile; the driver never synthesizes
+		// routes or rules.
+		if deviceCfg.NetworkInterfaceConfigInPod.Interface.IsSubinterface() {
+			iface := &deviceCfg.NetworkInterfaceConfigInPod.Interface
+			if len(iface.Addresses) == 0 && iface.Addressing != apis.AddressingModeUnnumbered {
+				errorList = append(errorList, fmt.Errorf("device %s: interface type %q resolved with no addresses; set interface.addresses, reference a profile that allocates them, or set interface.addressing: Unnumbered", result.Device, iface.Type))
+				continue
+			}
+			if iface.Addressing == apis.AddressingModeUnnumbered {
+				klog.V(2).Infof("device %s: unnumbered %s interface requested; skipping address and route configuration", result.Device, iface.Type)
+			}
+		}
+
 		// Get RDMA configuration: link and char devices
 		if rdmaDev, err := inventory.GetRdmaDevice(ifName); err == nil && rdmaDev != "" {
+			if deviceCfg.NetworkInterfaceConfigInPod.Interface.IsSubinterface() && !np.rdmaSharedMode {
+				errorList = append(errorList, fmt.Errorf("device %s: interface type %q (subinterface) is not supported with exclusive RDMA mode; use shared RDMA mode", result.Device, deviceCfg.NetworkInterfaceConfigInPod.Interface.Type))
+				continue
+			}
 			klog.V(2).Infof("RunPodSandbox processing RDMA device: %s", rdmaDev)
 			deviceCfg.RDMADevice = buildRDMAConfig(rdmaDev)
 		}

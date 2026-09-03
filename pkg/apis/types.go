@@ -23,6 +23,7 @@ type NetworkConfig struct {
 	// parameters resolved by the provider plugin (e.g., dynamic IPAM).
 	// This separates user intent from infrastructure implementation.
 	Profile string `json:"profile,omitempty"`
+
 	// Interface defines core properties of the network interface.
 	// Settings here are typically managed by `ip link` commands.
 	Interface InterfaceConfig `json:"interface"`
@@ -48,12 +49,31 @@ type InterfaceConfig struct {
 	// If not specified, DraNet may use or derive a name from the original interface.
 	Name string `json:"name,omitempty"`
 
+	// Type selects how the allocated device is presented to the Pod:
+	//   - "Passthrough" (default): the network device itself is moved into the
+	//     Pod's network namespace.
+	//   - "IPVLAN": the device stays in the host namespace and an IPVLAN
+	//     subinterface is created on top of it inside the Pod.
+	// It may be set by the cloud provider or in the user's ResourceClaim.
+	// If empty, it is treated as "Passthrough".
+	Type InterfaceType `json:"type,omitempty"`
+
+	// Addressing selects the IP address configuration strategy:
+	// "Static" (default), "DHCP", or "Unnumbered".
+	// An empty value is treated as "Static".
+	Addressing AddressingMode `json:"addressing,omitempty"`
+
 	// Addresses is a list of IP addresses in CIDR format (e.g., "192.168.1.10/24")
 	// to be assigned to the interface.
 	Addresses []string `json:"addresses,omitempty"`
 
 	// DHCP, if true, indicates that the interface should be configured via DHCP.
 	// This is mutually exclusive with the 'addresses' field.
+	//
+	// Deprecated: use Addressing: "DHCP" instead. Retained for backward
+	// compatibility: when Addressing is unset, DHCP=true is normalized to
+	// Addressing: "DHCP". Setting DHCP together with an explicit Addressing is
+	// rejected by validation.
 	DHCP *bool `json:"dhcp,omitempty"`
 
 	// MTU is the Maximum Transmission Unit for the interface.
@@ -104,6 +124,9 @@ type InterfaceConfig struct {
 	// If provided, the interface will be enslaved to a VRF device with this name.
 	// This enables grouping multiple network interfaces into the same VRF.
 	VRF *VRFConfig `json:"vrf,omitempty"`
+
+	// IPVlan holds IPVLAN-specific settings (mode and flag). Applies only when Type is "IPVLAN".
+	IPVlan *IPVlanConfig `json:"ipvlan,omitempty"`
 }
 
 // VRFConfig represents the configuration for a Virtual Routing and Forwarding domain.
@@ -117,6 +140,61 @@ type VRFConfig struct {
 	// Common reserved tables: 255 (local), 254 (main), 253 (default).
 	Table *int `json:"table,omitempty"`
 }
+
+// InterfaceType specifies how an allocated network device is presented to the Pod.
+type InterfaceType string
+
+const (
+	// InterfaceTypePassthrough moves the network device into the Pod's namespace. This is the default.
+	InterfaceTypePassthrough InterfaceType = "Passthrough"
+	// InterfaceTypeIPVLAN creates an IPVLAN subinterface in the Pod on top of the host device.
+	InterfaceTypeIPVLAN InterfaceType = "IPVLAN"
+)
+
+// AddressingMode selects how a Pod interface obtains its IP configuration.
+type AddressingMode string
+
+const (
+	// AddressingModeStatic configures IP addresses from InterfaceConfig.Addresses
+	// or from a cloud provider profile. This is the default.
+	AddressingModeStatic AddressingMode = "Static"
+	// AddressingModeDHCP obtains network configuration via DHCP.
+	AddressingModeDHCP AddressingMode = "DHCP"
+	// AddressingModeUnnumbered brings the interface up without driver configuring
+	// IP addresses or routes. Valid only for subinterfaces.
+	AddressingModeUnnumbered AddressingMode = "Unnumbered"
+)
+
+// IsSubinterface reports whether this interface must be realized as a
+// subinterface created on top of the parent device (e.g. IPVLAN), rather than
+// moving the device itself into the Pod's network namespace (passthrough).
+func (c InterfaceConfig) IsSubinterface() bool {
+	return c.Type == InterfaceTypeIPVLAN
+}
+
+// IPVlanConfig holds the mode and flag of an IPVLAN subinterface.
+type IPVlanConfig struct {
+	// Mode selects the IPVLAN operating mode. Defaults to IPVlanModeL2.
+	Mode IPVlanMode `json:"mode,omitempty"`
+	// Flag selects the IPVLAN link behavior. Defaults to IPVlanFlagBridge.
+	Flag IPVlanFlag `json:"flag,omitempty"`
+}
+
+// IPVlanMode defines how traffic is routed to the IPVLAN child interfaces.
+type IPVlanMode string
+
+const (
+	// IPVlanModeL2 has child interfaces handle their own L2 protocols like ARP.
+	IPVlanModeL2 IPVlanMode = "L2"
+)
+
+// IPVlanFlag defines the link behavior of the IPVLAN child interfaces.
+type IPVlanFlag string
+
+const (
+	// IPVlanFlagBridge lets child interfaces talk directly to each other internally.
+	IPVlanFlagBridge IPVlanFlag = "Bridge"
+)
 
 // RouteConfig represents a network route configuration.
 type RouteConfig struct {

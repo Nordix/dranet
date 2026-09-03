@@ -45,11 +45,13 @@ const (
 	CloudProviderHintNone    CloudProviderHint = "NONE"
 )
 
-// Dependencies contains Kubernetes-local inputs used by providers that do not
-// expose a conventional instance metadata service.
+// Dependencies carries host- and runtime-provided inputs that providers require
+// but cannot obtain from conventional instance metadata service.
 type Dependencies struct {
 	NodeClient corev1client.NodeInterface
 	NodeName   string
+	// ReservedAddresses seeds a provider with addresses already in use on the node.
+	ReservedAddresses []string
 }
 
 type cloudProviderProbe struct {
@@ -93,7 +95,7 @@ func detectCloudProvider(probes []cloudProviderProbe) CloudProviderHint {
 func GetInstanceProperties(ctx context.Context, hint CloudProviderHint, webhookURL string, dependencies Dependencies) (cloudprovider.CloudInstance, error) {
 	switch hint {
 	case CloudProviderHintGCE:
-		return gce.GetInstance(ctx)
+		return gce.GetInstance(ctx, gce.WithReservedAddresses(dependencies.ReservedAddresses))
 	case CloudProviderHintAWS:
 		return aws.GetInstance(ctx)
 	case CloudProviderHintAzure:

@@ -20,18 +20,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/netip"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
 	"cloud.google.com/go/compute/metadata"
+	"golang.org/x/sys/unix"
 
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 
 	resourceapi "k8s.io/api/resource/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/dranet/pkg/apis"
 	"sigs.k8s.io/dranet/pkg/cloudprovider"
+	"sigs.k8s.io/dranet/pkg/ipam"
 )
 
 // GPUDirectSupport represents the type of GPUDirect support for a given machine type.
@@ -76,15 +82,18 @@ var (
 
 // gceNetworkInterface matches the structure expected from GCE metadata.
 type gceNetworkInterface struct {
-	IPv4      string   `json:"ip,omitempty"`
-	IPv6      []string `json:"ipv6,omitempty"`
-	Mac       string   `json:"mac,omitempty"`
-	MTU       int      `json:"mtu,omitempty"`
-	Network   string   `json:"network,omitempty"`
-	IPAliases []string `json:"ipAliases,omitempty"`
+	IPv4        string   `json:"ip,omitempty"`
+	IPv6        []string `json:"ipv6,omitempty"`
+	Mac         string   `json:"mac,omitempty"`
+	MTU         int      `json:"mtu,omitempty"`
+	Network     string   `json:"network,omitempty"`
+	IPAliases   []string `json:"ipAliases,omitempty"`
+	Gateway     string   `json:"gateway,omitempty"`
+	GatewayIPv6 string   `json:"gatewayIpv6,omitempty"`
 }
 
 var _ cloudprovider.CloudInstance = (*GCEInstance)(nil)
+var _ cloudprovider.ProfileProvider = (*GCEInstance)(nil)
 
 // GCEInstance holds the GCE specific instance data.
 type GCEInstance struct {
@@ -93,6 +102,8 @@ type GCEInstance struct {
 	AcceleratorProtocol string
 	Interfaces          []gceNetworkInterface
 	Topology            string
+	// localIPAM is the node-local IP allocator used to assign addresses to subinterfaces.
+	localIPAM *ipam.LocalIPAM
 }
 
 // GetDeviceAttributes fetches all attributes related to the provided device,
@@ -151,14 +162,146 @@ func (g *GCEInstance) GetDeviceAttributes(id cloudprovider.DeviceIdentifiers) ma
 	return attributes
 }
 
+// ManagedProfile is the profile GCE advertises on every device it recognizes,
+// so claim-scoped resolution (GetProfileConfig) always runs on GCE without the
+// user having to set interface.profile. Resolution is a no-op unless the claim
+// requests something GCE manages dynamically (e.g. an IPVLAN subinterface,
+// which gets IPAM addresses plus its policy based routing).
+const ManagedProfile = "gce-managed"
+
 // GetDeviceConfig fetches any infrastructure-specific network configuration
 // required by the device. Returning nil means no specific config is needed.
 func (g *GCEInstance) GetDeviceConfig(id cloudprovider.DeviceIdentifiers) *apis.NetworkConfig {
+	return &apis.NetworkConfig{Profile: ManagedProfile}
+}
+
+func (g *GCEInstance) GetProfileConfig(id cloudprovider.DeviceIdentifiers, claim *resourceapi.ResourceClaim, config *apis.NetworkConfig) (*apis.NetworkConfig, error) {
+	if id.MAC == "" {
+		return nil, nil
+	}
+
+	interfaceForMacFound := false
+	var interfaceForMac gceNetworkInterface
+	for _, cloudInterface := range g.Interfaces {
+		if cloudInterface.Mac == id.MAC {
+			interfaceForMacFound = true
+			interfaceForMac = cloudInterface
+			break
+		}
+	}
+	if !interfaceForMacFound {
+		klog.V(4).Infof("No cloud metadata found for device with mac %q; it is possible this device has no associated cloud provider metadata", id.MAC)
+		return nil, nil
+	}
+
+	if config == nil || !config.Interface.IsSubinterface() {
+		return nil, nil
+	}
+	if g.localIPAM == nil {
+		return nil, fmt.Errorf("GCE profile IPAM is not initialized for subinterface device %q", id.MAC)
+	}
+
+	// Record static sub-interface IP addresses in IPAM as in-use.
+	if len(config.Interface.Addresses) > 0 {
+		if err := g.localIPAM.Reserve(config.Interface.Addresses); err != nil {
+			return nil, fmt.Errorf("reserving static subinterface addresses for device %q: %w", id.MAC, err)
+		}
+		return sourceRoutingConfig(interfaceForMac, config, nil), nil
+	}
+
+	// Otherwise allocate node-local IPs from the interface's cloud ranges.
+	ranges, err := g.subinterfaceRanges(interfaceForMac)
+	if err != nil {
+		return nil, err
+	}
+	if len(ranges) == 0 {
+		return nil, fmt.Errorf("no subinterface IP ranges found in cloud metadata for device %q", id.MAC)
+	}
+	addrs, err := g.localIPAM.Allocate(ranges)
+	if err != nil {
+		return nil, fmt.Errorf("allocating subinterface addresses for device %q: %w", id.MAC, err)
+	}
+	return sourceRoutingConfig(interfaceForMac, config, addrs), nil
+}
+
+// sourceRoutingConfig builds the profile config for a subinterface: the newly
+// allocated addresses (if any) plus the policy based routing (PBR) needed for
+// them to egress via the parent NIC's gateway: a per-device routing table
+// holding an on-link gateway route and a default route, and one source rule per
+// address. When the merged config already carries routes, rules or a VRF, the
+// user/provider owns routing and nothing is synthesized.
+func sourceRoutingConfig(iface gceNetworkInterface, config *apis.NetworkConfig, allocated []string) *apis.NetworkConfig {
+	profile := &apis.NetworkConfig{Interface: apis.InterfaceConfig{Addresses: allocated}}
+
+	addrs := allocated
+	if len(addrs) == 0 {
+		addrs = config.Interface.Addresses
+	}
+	if len(config.Routes) > 0 || len(config.Rules) > 0 || config.Interface.VRF != nil {
+		if len(allocated) == 0 {
+			return nil
+		}
+		return profile
+	}
+
+	// Gateways from the VM metadata, keyed by netip.Addr.Is6().
+	gateways := map[bool]netip.Addr{}
+	if gw, err := netip.ParseAddr(iface.Gateway); err == nil && gw.Is4() {
+		gateways[false] = gw
+	}
+	if gw, err := netip.ParseAddr(iface.GatewayIPv6); err == nil && gw.Is6() {
+		gateways[true] = gw
+	}
+
+	tableID := apis.TableIDForName(iface.Mac)
+	routesAdded := map[bool]bool{}
+	for _, addrStr := range addrs {
+		prefix, err := netip.ParsePrefix(addrStr)
+		if err != nil {
+			continue
+		}
+		is6 := prefix.Addr().Is6()
+		gw, ok := gateways[is6]
+		if !ok {
+			continue
+		}
+		if !routesAdded[is6] {
+			defaultDst := "0.0.0.0/0"
+			if is6 {
+				defaultDst = "::/0"
+			}
+			profile.Routes = append(profile.Routes,
+				// On-link route so the gateway is reachable from a host-prefix address.
+				apis.RouteConfig{Destination: netip.PrefixFrom(gw, gw.BitLen()).String(), Scope: unix.RT_SCOPE_LINK, Table: tableID},
+				apis.RouteConfig{Destination: defaultDst, Gateway: gw.String(), Table: tableID})
+			routesAdded[is6] = true
+		}
+		// Host prefix (/32 or /128) so rules for sibling subinterfaces never overlap.
+		profile.Rules = append(profile.Rules, apis.RuleConfig{
+			Source:   netip.PrefixFrom(prefix.Addr(), prefix.Addr().BitLen()).String(),
+			Table:    tableID,
+			Priority: apis.SourceRoutingRulePriority,
+		})
+	}
+	if len(allocated) == 0 && len(profile.Routes) == 0 && len(profile.Rules) == 0 {
+		return nil
+	}
+	return profile
+}
+
+func (g *GCEInstance) ReleaseProfileConfig(id cloudprovider.DeviceIdentifiers, claimUID types.UID, config *apis.NetworkConfig) error {
+	if config == nil || !config.Interface.IsSubinterface() || g.localIPAM == nil {
+		return nil
+	}
+	// Release the node-local IP leases that GetProfileConfig allocated.
+	for _, addr := range config.Interface.Addresses {
+		g.localIPAM.Release(addr)
+	}
 	return nil
 }
 
 // GetInstance retrieves GCE instance properties by querying the metadata server.
-func GetInstance(ctx context.Context) (cloudprovider.CloudInstance, error) {
+func GetInstance(ctx context.Context, opts ...Option) (cloudprovider.CloudInstance, error) {
 	var instance *GCEInstance
 	// metadata server can not be available during startup
 	err := wait.PollUntilContextTimeout(ctx, 1*time.Second, 15*time.Second, true, func(ctx context.Context) (done bool, err error) {
@@ -190,6 +333,10 @@ func GetInstance(ctx context.Context) (cloudprovider.CloudInstance, error) {
 			Name:                instanceName,
 			Type:                instanceType,
 			AcceleratorProtocol: string(protocol),
+			localIPAM:           ipam.NewLocalIPAM(nil),
+		}
+		for _, opt := range opts {
+			opt(instance)
 		}
 		if err = json.Unmarshal([]byte(gceInterfacesRaw), &instance.Interfaces); err != nil {
 			klog.Infof("could not get network interfaces on GCE ... retrying: %v", err)
@@ -211,4 +358,76 @@ func GetInstance(ctx context.Context) (cloudprovider.CloudInstance, error) {
 		return nil, err
 	}
 	return instance, nil
+}
+
+// Option configures a GCEInstance at construction time; see GetInstance.
+type Option func(*GCEInstance)
+
+// WithReservedAddresses seeds the instance's node-local IPAM with addresses
+// already in use on the node, so it doesn't hand out ones that are taken.
+func WithReservedAddresses(addrs []string) Option {
+	return func(g *GCEInstance) {
+		g.localIPAM = ipam.NewLocalIPAM(addrs)
+	}
+}
+
+// subinterfaceRanges derives the node-local IP allocation ranges for the given GCE network interface.
+func (g *GCEInstance) subinterfaceRanges(iface gceNetworkInterface) ([]ipam.IPRange, error) {
+	var ranges []ipam.IPRange
+	// IPv6: derive the subinterface range from the base IPv6 address.
+	if len(iface.IPv6) > 0 {
+		cidr, err := getIPv6Range(iface.IPv6[0])
+		if err != nil {
+			return nil, fmt.Errorf("calculating IPv6 range for base IP %q: %w", iface.IPv6[0], err)
+		}
+		start, end, err := cloudprovider.IPRangeFromCIDR(cidr, 0, 0)
+		if err != nil {
+			return nil, fmt.Errorf("deriving IPv6 allocation range from %q: %w", cidr, err)
+		}
+		ranges = append(ranges, ipam.IPRange{Start: start, End: end})
+	}
+	// IPv4: from the first alias range.
+	if len(iface.IPAliases) > 0 {
+		alias := iface.IPAliases[0]
+		start, end, err := cloudprovider.IPRangeFromCIDR(alias, 0, 0)
+		if err != nil {
+			return nil, fmt.Errorf("deriving IPv4 allocation range from alias %q: %w", alias, err)
+		}
+		ranges = append(ranges, ipam.IPRange{Start: start, End: end})
+	}
+	return ranges, nil
+}
+
+// getIPv6Range calculates the subinterface IPv6 range by appending 0xC0DE marker to the base range.
+func getIPv6Range(baseIPStr string) (string, error) {
+	const workerMarker = 0xC0DE
+
+	_, ipnet, err := net.ParseCIDR(baseIPStr)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse CIDR %q: %v", baseIPStr, err)
+	}
+	prefixLen, _ := ipnet.Mask.Size()
+	baseIP := ipnet.IP
+
+	if baseIP.To4() != nil {
+		return "", fmt.Errorf("IP %q is an IPv4 address, expected IPv6", baseIPStr)
+	}
+	ip16 := baseIP.To16()
+	if ip16 == nil {
+		return "", fmt.Errorf("IP %q is not a valid IPv6 address", baseIPStr)
+	}
+
+	workerIP := make(net.IP, 16)
+	numBaseBytes := prefixLen / 8
+
+	if numBaseBytes >= 14 {
+		return "", fmt.Errorf("prefix length %d is too large to append %x", prefixLen, workerMarker)
+	}
+
+	copy(workerIP[0:numBaseBytes], ip16[0:numBaseBytes])
+	workerIP[numBaseBytes] = byte(workerMarker >> 8)
+	workerIP[numBaseBytes+1] = byte(workerMarker & 0xFF)
+	newPrefixLen := (numBaseBytes + 2) * 8
+
+	return workerIP.String() + "/" + strconv.Itoa(newPrefixLen), nil
 }

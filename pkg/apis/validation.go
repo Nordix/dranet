@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -137,6 +138,33 @@ func validateInterfaceConfig(cfg *InterfaceConfig, fieldPath string) (allErrors 
 		return
 	}
 
+	if !slices.Contains([]InterfaceType{"", InterfaceTypePassthrough, InterfaceTypeIPVLAN}, cfg.Type) {
+		allErrors = append(allErrors, fmt.Errorf("%s.type: '%s' is not supported", fieldPath, cfg.Type))
+	}
+
+	if cfg.IsSubinterface() {
+		allErrors = append(allErrors, validateSubinterfaceOnlyConfig(cfg, fieldPath)...)
+	}
+
+	if !slices.Contains([]AddressingMode{"", AddressingModeStatic, AddressingModeDHCP, AddressingModeUnnumbered}, cfg.Addressing) {
+		allErrors = append(allErrors, fmt.Errorf("%s.addressing: '%s' is not supported", fieldPath, cfg.Addressing))
+	}
+
+	// The deprecated dhcp field may only coexist with "DHCP" addressing.
+	if cfg.DHCP != nil && *cfg.DHCP && cfg.Addressing != "" && cfg.Addressing != AddressingModeDHCP {
+		allErrors = append(allErrors, fmt.Errorf("%s: dhcp is deprecated and conflicts with addressing '%s'", fieldPath, cfg.Addressing))
+	}
+
+	// Unnumbered is only valid for subinterfaces and cannot carry addresses.
+	if cfg.Addressing == AddressingModeUnnumbered {
+		if !cfg.IsSubinterface() {
+			allErrors = append(allErrors, fmt.Errorf("%s.addressing: '%s' is only valid for subinterface types", fieldPath, AddressingModeUnnumbered))
+		}
+		if len(cfg.Addresses) > 0 {
+			allErrors = append(allErrors, fmt.Errorf("%s.addressing: '%s' cannot be set together with addresses", fieldPath, AddressingModeUnnumbered))
+		}
+	}
+
 	allErrors = append(allErrors, isValidLinuxInterfaceName(cfg.Name, fieldPath+".name")...)
 
 	for i, addr := range cfg.Addresses {
@@ -145,7 +173,7 @@ func validateInterfaceConfig(cfg *InterfaceConfig, fieldPath string) (allErrors 
 		}
 	}
 
-	if cfg.DHCP != nil && *cfg.DHCP && len(cfg.Addresses) > 0 {
+	if (cfg.Addressing == AddressingModeDHCP || (cfg.DHCP != nil && *cfg.DHCP)) && len(cfg.Addresses) > 0 {
 		allErrors = append(allErrors, fmt.Errorf("%s: dhcp and addresses are mutually exclusive", fieldPath))
 	}
 
@@ -189,6 +217,15 @@ func validateInterfaceConfig(cfg *InterfaceConfig, fieldPath string) (allErrors 
 		allErrors = append(allErrors, validateVRFConfig(cfg.VRF, fieldPath+".vrf")...)
 	}
 
+	if cfg.IPVlan != nil {
+		// Surface an error for the misconfiguration instead of silently dropping it.
+		if cfg.Type != InterfaceTypeIPVLAN {
+			allErrors = append(allErrors, fmt.Errorf("%s.ipvlan: configuration invalid for non-ipvlan interface type", fieldPath))
+		} else {
+			allErrors = append(allErrors, validateIPVlanConfig(cfg.IPVlan, fieldPath+".ipvlan")...)
+		}
+	}
+
 	return allErrors
 }
 
@@ -205,6 +242,17 @@ func validateVRFConfig(cfg *VRFConfig, fieldPath string) (allErrors []error) {
 		if *cfg.Table == 253 || *cfg.Table == 254 || *cfg.Table == 255 {
 			allErrors = append(allErrors, fmt.Errorf("%s.table: cannot use reserved table ID %d", fieldPath, *cfg.Table))
 		}
+	}
+
+	return allErrors
+}
+
+func validateIPVlanConfig(cfg *IPVlanConfig, fieldPath string) (allErrors []error) {
+	if cfg.Mode != IPVlanModeL2 {
+		allErrors = append(allErrors, fmt.Errorf("%s.mode: '%s' is not supported", fieldPath, cfg.Mode))
+	}
+	if cfg.Flag != IPVlanFlagBridge {
+		allErrors = append(allErrors, fmt.Errorf("%s.flag: '%s' is not supported", fieldPath, cfg.Flag))
 	}
 
 	return allErrors
@@ -333,12 +381,14 @@ func ValidateRDMAOnlyConfig(raw *runtime.RawExtension) []error {
 	for _, e := range strictErrs {
 		allErrors = append(allErrors, fmt.Errorf("failed to unmarshal strict JSON data: %w", e))
 	}
-	if config.Interface.Name != "" || len(config.Interface.Addresses) > 0 ||
+	if config.Interface.Name != "" || config.Interface.Type != "" ||
+		config.Interface.Addressing != "" || len(config.Interface.Addresses) > 0 ||
 		config.Interface.MTU != nil || config.Interface.HardwareAddr != nil ||
 		config.Interface.DHCP != nil || config.Interface.GSOMaxSize != nil ||
 		config.Interface.GROMaxSize != nil || config.Interface.GSOIPv4MaxSize != nil ||
 		config.Interface.GROIPv4MaxSize != nil || config.Interface.DisableEBPFPrograms != nil ||
-		config.Interface.ARPIgnore != nil || config.Interface.ARPAnnounce != nil {
+		config.Interface.ARPIgnore != nil || config.Interface.ARPAnnounce != nil ||
+		config.Interface.IPVlan != nil {
 		allErrors = append(allErrors, fmt.Errorf("interface configuration is not supported for RDMA-only devices (no network interface present)"))
 	}
 	if len(config.Routes) > 0 {
@@ -352,6 +402,19 @@ func ValidateRDMAOnlyConfig(raw *runtime.RawExtension) []error {
 	}
 	if len(config.Neighbors) > 0 {
 		allErrors = append(allErrors, fmt.Errorf("neighbors are not supported for RDMA-only devices (no network interface present)"))
+	}
+	return allErrors
+}
+
+// validateSubinterfaceOnlyConfig checks that a NetworkConfig does not contain
+// network-specific fields that are meaningless for a subinterface (e.g. IPVLAN).
+func validateSubinterfaceOnlyConfig(cfg *InterfaceConfig, fieldPath string) (allErrors []error) {
+	if cfg.MTU != nil || cfg.HardwareAddr != nil ||
+		cfg.GSOMaxSize != nil || cfg.GROMaxSize != nil ||
+		cfg.GSOIPv4MaxSize != nil || cfg.GROIPv4MaxSize != nil ||
+		cfg.ARPIgnore != nil || cfg.ARPAnnounce != nil ||
+		cfg.Addressing == AddressingModeDHCP || (cfg.DHCP != nil && *cfg.DHCP) {
+		allErrors = append(allErrors, fmt.Errorf("%s: mtu, hardwareAddr, gso/gro sizes, arpIgnore, arpAnnounce and dhcp are not yet supported for subinterface types (type: %s)", fieldPath, cfg.Type))
 	}
 	return allErrors
 }
