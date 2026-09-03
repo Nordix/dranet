@@ -1,0 +1,13 @@
+# One CKS InfiniBand HCA per pod.
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: cks-infiniband-1nic
+spec:
+  spec:
+    devices:
+      requests:
+      - name: nic
+        exactly:
+          deviceClassName: infiniband.cks.coreweave.com
+          count: 1

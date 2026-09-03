@@ -1,0 +1,82 @@
+# Two-node NCCL all-reduce with one GPU and one DRA-allocated InfiniBand HCA
+# per worker. Install Kubeflow MPI Operator v0.7.0 before applying this file.
+apiVersion: kubeflow.org/v2beta1
+kind: MPIJob
+metadata:
+  name: cks-nccl-test-dra
+spec:
+  slotsPerWorker: 1
+  mpiReplicaSpecs:
+    Launcher:
+      replicas: 1
+      restartPolicy: Never
+      template:
+        spec:
+          activeDeadlineSeconds: 900
+          containers:
+          - name: nccl
+            image: ghcr.io/coreweave/nccl-tests:12.9.1-devel-ubuntu24.04-nccl2.29.2-1-d73ec07
+            command: ["/bin/bash", "-c"]
+            args:
+            - |
+              while ! (for host in $(awk '{print $1}' /etc/mpi/hostfile); do
+                ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "$host" exit 2>/dev/null || exit 1
+              done); do
+                echo "Waiting for workers to be ready..."
+                sleep 5
+              done
+              mpirun -np 2 \
+                --allow-run-as-root \
+                -bind-to none \
+                -x LD_LIBRARY_PATH \
+                -x NCCL_DEBUG=INFO \
+                -x NCCL_SOCKET_IFNAME=eth0 \
+                -x NCCL_IB_DISABLE=0 \
+                -x NCCL_IB_HCA=ibp \
+                -x NCCL_SHM_DISABLE=1 \
+                -x NCCL_MNNVL_ENABLE=0 \
+                -x NCCL_NVLS_ENABLE=0 \
+                -x NCCL_NET_GDR_LEVEL=PHB \
+                -x NCCL_IB_DATA_DIRECT=0 \
+                /opt/nccl_tests/build/all_reduce_perf \
+                  -b 8M -e 1G -f 2 -g 1 -c 1
+    Worker:
+      replicas: 2
+      restartPolicy: Never
+      template:
+        spec:
+          activeDeadlineSeconds: 900
+          automountServiceAccountToken: false
+          nodeSelector:
+            dra.net/cks-nccl-test: "true"
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchLabels:
+                    training.kubeflow.org/job-name: cks-nccl-test-dra
+                    training.kubeflow.org/job-role: worker
+                topologyKey: kubernetes.io/hostname
+          resourceClaims:
+          - name: infiniband
+            resourceClaimTemplateName: cks-infiniband-1nic
+          containers:
+          - name: nccl
+            image: ghcr.io/coreweave/nccl-tests:12.9.1-devel-ubuntu24.04-nccl2.29.2-1-d73ec07
+            resources:
+              limits:
+                nvidia.com/gpu: "1"
+              claims:
+              - name: infiniband
+            securityContext:
+              capabilities:
+                add:
+                - IPC_LOCK
+            volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+          volumes:
+          - name: shm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 8Gi
