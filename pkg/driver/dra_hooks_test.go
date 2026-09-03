@@ -663,9 +663,11 @@ func TestGetDeviceNetworkConfigWithWebhook(t *testing.T) {
 		profileResponse   *apis.NetworkConfig
 		profileStatusCode int
 		expectedError     bool
+		errContains       string
 		expectedAddresses []string
 		expectedMTU       int32
 		expectedProfile   string
+		expectedIPVlan    *apis.IPVlanConfig
 	}{
 		{
 			name:              "No configurations provided",
@@ -747,6 +749,60 @@ func TestGetDeviceNetworkConfigWithWebhook(t *testing.T) {
 			profileStatusCode: http.StatusForbidden,
 			expectedError:     true,
 		},
+		{
+			// The merged configuration never goes through ValidateConfig, so an
+			// ipvlan block contributed by a provider is only defaulted if
+			// getDeviceNetworkConfig does it. Without that, addIPVlan rejects the
+			// empty mode with "unsupported ipvlan mode".
+			name:     "Cloud provider ipvlan block is defaulted",
+			userConf: &apis.NetworkConfig{},
+			cloudConfResponse: &apis.NetworkConfig{
+				Interface: apis.InterfaceConfig{
+					Type:       apis.InterfaceTypeIPVLAN,
+					Addressing: apis.AddressingModeUnnumbered,
+					IPVlan:     &apis.IPVlanConfig{},
+				},
+			},
+			expectedIPVlan: &apis.IPVlanConfig{Mode: apis.IPVlanModeL2, Flag: apis.IPVlanFlagBridge},
+			expectedError:  false,
+		},
+		{
+			// Neither configuration is invalid on its own: the conflict only
+			// exists once they have been merged.
+			name: "User rules combined with cloud provider VRF is rejected",
+			userConf: &apis.NetworkConfig{
+				Rules: []apis.RuleConfig{{Source: "10.0.0.0/8", Table: 100}},
+			},
+			cloudConfResponse: &apis.NetworkConfig{
+				Interface: apis.InterfaceConfig{VRF: &apis.VRFConfig{Name: "vrf0"}},
+			},
+			expectedError: true,
+			errContains:   "rules are not supported when VRF is enabled",
+		},
+		{
+			name:     "Invalid cloud provider MTU is rejected",
+			userConf: &apis.NetworkConfig{},
+			cloudConfResponse: &apis.NetworkConfig{
+				Interface: apis.InterfaceConfig{MTU: ptr.To[int32](1)},
+			},
+			expectedError: true,
+			errContains:   "mtu: must be at least",
+		},
+		{
+			// Validation has to run after the profile merge, not only after the
+			// cloud provider merge.
+			name:     "Invalid Profile configuration is rejected",
+			userConf: &apis.NetworkConfig{},
+			cloudConfResponse: &apis.NetworkConfig{
+				Profile: "cloud-profile",
+			},
+			profileResponse: &apis.NetworkConfig{
+				Interface: apis.InterfaceConfig{Addresses: []string{"not-a-cidr"}},
+			},
+			profileStatusCode: http.StatusOK,
+			expectedError:     true,
+			errContains:       "invalid IP CIDR format",
+		},
 	}
 
 	for _, tc := range testCases {
@@ -817,6 +873,9 @@ func TestGetDeviceNetworkConfigWithWebhook(t *testing.T) {
 				if err == nil {
 					t.Fatalf("Expected an error but got nil")
 				}
+				if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
+					t.Errorf("Expected error containing %q, got %v", tc.errContains, err)
+				}
 				return
 			}
 
@@ -856,6 +915,12 @@ func TestGetDeviceNetworkConfigWithWebhook(t *testing.T) {
 				}
 			} else if mergedConf.Profile != "" {
 				t.Errorf("Expected empty profile, got %s", mergedConf.Profile)
+			}
+
+			if tc.expectedIPVlan != nil {
+				if diff := cmp.Diff(tc.expectedIPVlan, mergedConf.Interface.IPVlan); diff != "" {
+					t.Errorf("Unexpected ipvlan config (-want +got):\n%s", diff)
+				}
 			}
 		})
 	}
@@ -1293,6 +1358,9 @@ func testPrepareResourceClaim_Namespaced(t *testing.T) {
 								Name:       "dummy0",
 								Type:       "IPVLAN",
 								Addressing: apis.AddressingModeUnnumbered,
+								// The merged config is defaulted, so the ipvlan
+								// block the provider left unset is populated.
+								IPVlan: &apis.IPVlanConfig{Mode: apis.IPVlanModeL2, Flag: apis.IPVlanFlagBridge},
 							},
 						},
 					},
@@ -1362,6 +1430,9 @@ func testPrepareResourceClaim_Namespaced(t *testing.T) {
 								Name:      "dummy0",
 								Type:      "IPVLAN",
 								Addresses: []string{"10.24.3.5/32"},
+								// The merged config is defaulted, so the ipvlan
+								// block the provider left unset is populated.
+								IPVlan: &apis.IPVlanConfig{Mode: apis.IPVlanModeL2, Flag: apis.IPVlanFlagBridge},
 							},
 							Routes: []apis.RouteConfig{
 								{Destination: "10.24.3.1/32", Scope: 253, Table: 1100},

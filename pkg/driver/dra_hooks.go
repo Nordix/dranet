@@ -706,6 +706,7 @@ func getRouteInfo(nlHandle nlwrap.Handle, ifName string, link netlink.Link) ([]a
 
 // getDeviceNetworkConfig merges the user configuration with the cloud provider configuration and resolves the dynamic profile.
 // User configuration always takes precedence in case of conflicts.
+// The merged result is defaulted and validated before it is returned.
 func (np *NetworkDriver) getDeviceNetworkConfig(device string, claim *resourceapi.ResourceClaim, userConf *apis.NetworkConfig) (*apis.NetworkConfig, error) {
 	cloudConf, ok := np.netdb.GetDeviceConfig(device)
 	if ok && cloudConf != nil {
@@ -719,6 +720,15 @@ func (np *NetworkDriver) getDeviceNetworkConfig(device string, claim *resourceap
 			return nil, fmt.Errorf("failed to get profile config: %v", err)
 		}
 		mergedConf = apis.MergeNetworkConfig(mergedConf, profileConf)
+	}
+
+	// The user configuration was already validated when the claim was parsed, but
+	// the cloud provider and profile configurations are unvalidated external input
+	// and some invariants only become checkable once everything is merged. Default
+	// and validate the configuration that is actually going to be applied, so a bad
+	// provider config fails here with a clear error instead of partially applying.
+	if errs := mergedConf.Validate(); len(errs) > 0 {
+		return nil, fmt.Errorf("merged network config for device %s is invalid: %v", device, errs)
 	}
 	return mergedConf, nil
 }

@@ -37,7 +37,7 @@ const (
 )
 
 // ValidateConfig unmarshals and validates the NetworkConfig from a runtime.RawExtension.
-// It performs strict unmarshalling and then calls specific validation functions for each part of the config.
+// It performs strict unmarshalling and then defaults and validates the result via Validate.
 // Returns the parsed NetworkConfig and a slice of errors if any validation fails.
 func ValidateConfig(raw *runtime.RawExtension) (*NetworkConfig, []error) {
 	if raw == nil || raw.Raw == nil || len(raw.Raw) == 0 {
@@ -60,41 +60,55 @@ func ValidateConfig(raw *runtime.RawExtension) (*NetworkConfig, []error) {
 		}
 	}
 
-	// Apply defaults
-	config.Default()
-
-	// Validate InterfaceConfig
-	allErrors = append(allErrors, validateInterfaceConfig(&config.Interface, "interface")...)
-
-	// Validate Routes
-	if len(config.Routes) > 0 {
-		allErrors = append(allErrors, validateRoutes(config.Routes, "routes")...)
-	}
-
-	// Validate Rules
-	if len(config.Rules) > 0 {
-		if config.Interface.VRF != nil {
-			allErrors = append(allErrors, fmt.Errorf("rules are not supported when VRF is enabled"))
-		} else {
-			allErrors = append(allErrors, validateRules(config.Rules, "rules")...)
-		}
-	}
-
-	// Validate EthtoolConfig if present
-	if config.Ethtool != nil {
-		allErrors = append(allErrors, validateEthtoolConfig(config.Ethtool, "ethtool")...)
-	}
-
-	// Validate Neighbors
-	if len(config.Neighbors) > 0 {
-		allErrors = append(allErrors, validateNeighborConfig(config.Neighbors, "neighbors")...)
-	}
+	allErrors = append(allErrors, config.Validate()...)
 
 	if len(allErrors) > 0 {
 		return &config, allErrors // Return partially parsed config with errors
 	}
 
 	return &config, nil
+}
+
+// Validate applies defaults to an already parsed NetworkConfig and validates it.
+// Use it for configurations assembled in memory rather than unmarshalled from a
+// ResourceClaim, most importantly the result of MergeNetworkConfig: the cloud
+// provider and profile configurations merged in there are unvalidated external
+// input, and cross-field invariants (e.g. rules combined with a VRF) only become
+// checkable once every source has been merged.
+func (c *NetworkConfig) Validate() []error {
+	// Apply defaults
+	c.Default()
+
+	var allErrors []error
+
+	// Validate InterfaceConfig
+	allErrors = append(allErrors, validateInterfaceConfig(&c.Interface, "interface")...)
+
+	// Validate Routes
+	if len(c.Routes) > 0 {
+		allErrors = append(allErrors, validateRoutes(c.Routes, "routes")...)
+	}
+
+	// Validate Rules
+	if len(c.Rules) > 0 {
+		if c.Interface.VRF != nil {
+			allErrors = append(allErrors, fmt.Errorf("rules are not supported when VRF is enabled"))
+		} else {
+			allErrors = append(allErrors, validateRules(c.Rules, "rules")...)
+		}
+	}
+
+	// Validate EthtoolConfig if present
+	if c.Ethtool != nil {
+		allErrors = append(allErrors, validateEthtoolConfig(c.Ethtool, "ethtool")...)
+	}
+
+	// Validate Neighbors
+	if len(c.Neighbors) > 0 {
+		allErrors = append(allErrors, validateNeighborConfig(c.Neighbors, "neighbors")...)
+	}
+
+	return allErrors
 }
 
 // isValidLinuxInterfaceName checks if the provided name is a valid Linux interface name.
