@@ -924,3 +924,170 @@ func TestValidateNeighborConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestNetworkConfigValidate(t *testing.T) {
+	// Validate is the entry point for configurations assembled in memory, most
+	// importantly the result of MergeNetworkConfig. It must both apply defaults
+	// (the merged config never goes through ValidateConfig) and catch cross-field
+	// combinations that can only appear once user, cloud provider and profile
+	// configurations have been merged together.
+	tests := []struct {
+		name        string
+		config      *NetworkConfig
+		expectErr   bool
+		errContains []string
+		expectedCfg *NetworkConfig
+	}{
+		{
+			name: "defaults an empty ipvlan block supplied by a provider",
+			config: &NetworkConfig{
+				Interface: InterfaceConfig{
+					Type:       InterfaceTypeIPVLAN,
+					Addressing: AddressingModeUnnumbered,
+					IPVlan:     &IPVlanConfig{},
+				},
+			},
+			expectedCfg: &NetworkConfig{
+				Interface: InterfaceConfig{
+					Type:       InterfaceTypeIPVLAN,
+					Addressing: AddressingModeUnnumbered,
+					IPVlan:     &IPVlanConfig{Mode: IPVlanModeL2, Flag: IPVlanFlagBridge},
+				},
+			},
+		},
+		{
+			name: "defaults a missing ipvlan block for an ipvlan interface",
+			config: &NetworkConfig{
+				Interface: InterfaceConfig{
+					Type:       InterfaceTypeIPVLAN,
+					Addressing: AddressingModeUnnumbered,
+				},
+			},
+			expectedCfg: &NetworkConfig{
+				Interface: InterfaceConfig{
+					Type:       InterfaceTypeIPVLAN,
+					Addressing: AddressingModeUnnumbered,
+					IPVlan:     &IPVlanConfig{Mode: IPVlanModeL2, Flag: IPVlanFlagBridge},
+				},
+			},
+		},
+		{
+			name: "folds the deprecated dhcp field into addressing",
+			config: &NetworkConfig{
+				Interface: InterfaceConfig{Name: "eth0", DHCP: ptr.To(true)},
+			},
+			expectedCfg: &NetworkConfig{
+				Interface: InterfaceConfig{Name: "eth0", DHCP: ptr.To(true), Addressing: AddressingModeDHCP},
+			},
+		},
+		{
+			name: "derives a vrf table from the vrf name",
+			config: &NetworkConfig{
+				Interface: InterfaceConfig{Name: "eth0", VRF: &VRFConfig{Name: "tenant-a"}},
+			},
+			expectedCfg: &NetworkConfig{
+				Interface: InterfaceConfig{
+					Name: "eth0",
+					VRF:  &VRFConfig{Name: "tenant-a", Table: ptr.To(TableIDForName("tenant-a"))},
+				},
+			},
+		},
+		{
+			name: "rejects rules combined with a vrf",
+			config: &NetworkConfig{
+				Interface: InterfaceConfig{Name: "eth0", VRF: &VRFConfig{Name: "vrf0"}},
+				Rules:     []RuleConfig{{Source: "10.0.0.0/8", Table: 100}},
+			},
+			expectErr:   true,
+			errContains: []string{"rules are not supported when VRF is enabled"},
+		},
+		{
+			name: "rejects an mtu below the minimum",
+			config: &NetworkConfig{
+				Interface: InterfaceConfig{Name: "eth0", MTU: ptr.To[int32](MinMTU - 1)},
+			},
+			expectErr:   true,
+			errContains: []string{"mtu: must be at least"},
+		},
+		{
+			name: "rejects fields unsupported on a subinterface",
+			config: &NetworkConfig{
+				Interface: InterfaceConfig{
+					Type: InterfaceTypeIPVLAN,
+					MTU:  ptr.To[int32](1500),
+				},
+			},
+			expectErr:   true,
+			errContains: []string{"not yet supported for subinterface types"},
+		},
+		{
+			name: "rejects an invalid address contributed to the merged config",
+			config: &NetworkConfig{
+				Interface: InterfaceConfig{Name: "eth0", Addresses: []string{"not-a-cidr"}},
+			},
+			expectErr:   true,
+			errContains: []string{"invalid IP CIDR format"},
+		},
+		{
+			name: "accepts a fully populated valid config",
+			config: &NetworkConfig{
+				Interface: InterfaceConfig{Name: "eth0", Addresses: []string{"192.168.1.1/24"}, MTU: ptr.To[int32](1500)},
+				Routes: []RouteConfig{
+					{Destination: "0.0.0.0/0", Gateway: "192.168.1.254", Scope: unix.RT_SCOPE_UNIVERSE},
+				},
+				Rules:     []RuleConfig{{Source: "10.0.0.0/8", Table: 100}},
+				Neighbors: []NeighborConfig{{Destination: "192.168.1.5", HardwareAddr: "02:00:00:00:00:01"}},
+				Ethtool:   &EthtoolConfig{Features: map[string]bool{"tso": true}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := tt.config.Validate()
+
+			if tt.expectErr && len(errs) == 0 {
+				t.Fatalf("Validate() expected errors, got none")
+			}
+			if !tt.expectErr && len(errs) > 0 {
+				t.Fatalf("Validate() expected no errors, got %v", errs)
+			}
+
+			for _, want := range tt.errContains {
+				found := false
+				for _, err := range errs {
+					if strings.Contains(err.Error(), want) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Validate() errors %v do not contain %q", errs, want)
+				}
+			}
+
+			// Defaults must be applied in place: getDeviceNetworkConfig relies on
+			// Validate to default the merged config it is about to return.
+			if tt.expectedCfg != nil && !reflect.DeepEqual(tt.config, tt.expectedCfg) {
+				t.Errorf("Validate() did not default in place:\ngot  %+v\nwant %+v", tt.config.Interface, tt.expectedCfg.Interface)
+			}
+		})
+	}
+}
+
+func TestValidateConfigDelegatesToValidate(t *testing.T) {
+	// ValidateConfig must keep defaulting and validating via Validate, so the two
+	// entry points cannot drift apart.
+	raw := newRawExtensionFromString(t, `{"interface": {"type": "IPVLAN", "addressing": "Unnumbered", "ipvlan": {}}}`)
+
+	cfg, errs := ValidateConfig(raw)
+	if len(errs) > 0 {
+		t.Fatalf("ValidateConfig() unexpected errors: %v", errs)
+	}
+	if cfg.Interface.IPVlan == nil {
+		t.Fatalf("ValidateConfig() left ipvlan nil")
+	}
+	if cfg.Interface.IPVlan.Mode != IPVlanModeL2 || cfg.Interface.IPVlan.Flag != IPVlanFlagBridge {
+		t.Errorf("ValidateConfig() ipvlan = %+v, want mode %s flag %s", cfg.Interface.IPVlan, IPVlanModeL2, IPVlanFlagBridge)
+	}
+}
