@@ -19,8 +19,10 @@ package driver
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
+	"os"
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -153,8 +155,15 @@ func nsCreateSubinterface(hostIfName string, containerNsPath string, config apis
 }
 
 // nsDeleteSubinterface deletes a subinterface inside the container namespace.
+// A namespace path that no longer exists counts as cleaned up. The kernel
+// deletes any IPvlan child still in the namespace when the namespace is
+// destroyed.
 func nsDeleteSubinterface(containerNsPath string, devName string) error {
 	containerNs, err := netns.GetFromPath(containerNsPath)
+	if errors.Is(err, os.ErrNotExist) {
+		klog.V(2).Infof("Network namespace path %s is gone; relying on the kernel to delete subinterface %s when the namespace is destroyed", containerNsPath, devName)
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("could not get container network namespace %s: %w", containerNsPath, err)
 	}
