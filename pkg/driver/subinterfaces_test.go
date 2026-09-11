@@ -213,3 +213,11 @@ func TestSubinterface_IPVlan(t *testing.T) {
 		}
 	}()
 }
+
+func TestNsDeleteSubinterfaceMissingNamespace(t *testing.T) {
+	// A nonexistent namespace path counts as cleaned up and returns nil.
+	nsPath := path.Join(t.TempDir(), "netns-gone")
+	if err := nsDeleteSubinterface(nsPath, "rdma15"); err != nil {
+		t.Fatalf("nsDeleteSubinterface() returned error for a missing namespace: %v", err)
+	}
+}
