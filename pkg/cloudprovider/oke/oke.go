@@ -299,8 +299,13 @@ func ocidSuffix(s string) (string, error) {
 // GetDeviceConfig advertises the OKE profile with the IPvlan type for an
 // Ethernet RDMA NIC, so the RDMA NIC never moves into a pod. An RDMA NIC on an IPv6
 // fabric gets no profile and moves into the pod as before, because the
-// profile has no IPv6 support yet.
+// profile has no IPv6 support yet. A native InfiniBand NIC gets the profile
+// only when a claim would take it from the host, so GetProfileConfig fails
+// that claim.
 func (o *OKEInstance) GetDeviceConfig(id cloudprovider.DeviceIdentifiers) *apis.NetworkConfig {
+	if infiniBandHostError(id) != nil {
+		return &apis.NetworkConfig{Profile: okeRDMAProfile}
+	}
 	ifName, err := interfaceNameForPCIAddress(id.PCIAddress)
 	if err != nil || !o.isRDMANic(ifName) {
 		return nil
@@ -323,6 +328,10 @@ func (o *OKEInstance) GetProfileConfig(id cloudprovider.DeviceIdentifiers, _ *re
 	}
 	if config.Profile != okeRDMAProfile {
 		return nil, fmt.Errorf("unsupported OKE profile %q", config.Profile)
+	}
+	// Report an InfiniBand NIC first: the other checks do not apply to it.
+	if err := infiniBandHostError(id); err != nil {
+		return nil, err
 	}
 	if err := validateOKEProfileRequest(&config.Interface); err != nil {
 		return nil, err
@@ -415,6 +424,49 @@ func (o *OKEInstance) GetProfileConfig(id cloudprovider.DeviceIdentifiers, _ *re
 // ReleaseProfileConfig has nothing to free: the child address is deterministic.
 func (o *OKEInstance) ReleaseProfileConfig(cloudprovider.DeviceIdentifiers, types.UID, *apis.NetworkConfig) error {
 	return nil
+}
+
+// infiniBandHostError returns why a claim would take a native InfiniBand NIC,
+// or its RDMA device, from the host. The host health checks need both.
+// The inventory sets the MAC only while the IPoIB interface is attached to the
+// device, which is the --move-ib-interfaces=true case.
+func infiniBandHostError(id cloudprovider.DeviceIdentifiers) error {
+	rdmaDevice := infiniBandRDMADevice(id.PCIAddress)
+	if rdmaDevice == "" {
+		return nil
+	}
+	if id.MAC != "" {
+		return fmt.Errorf("the native InfiniBand NIC of %s stays on the host on OKE; run DRANET with --move-ib-interfaces=false and claim the RDMA device", rdmaDevice)
+	}
+	if rdmaExclusiveNetnsMode() {
+		return fmt.Errorf("the native InfiniBand RDMA device %s stays on the host on OKE, but exclusive network namespace mode moves it into the pod; use shared mode (ib_core netns_mode=1)", rdmaDevice)
+	}
+	return nil
+}
+
+// infiniBandRDMADevice returns the first RDMA device name, in lexical order,
+// associated with pciAddress that has at least one InfiniBand port.
+// It reads RDMA sysfs entries directly because a device may have zero or
+// multiple IPoIB interfaces. It returns "" if no match is found or filesystem
+// errors prevent discovery.
+func infiniBandRDMADevice(pciAddress string) string {
+	if pciAddress == "" {
+		return ""
+	}
+	base := filepath.Join(sysfsPCIDevices, pciAddress, "infiniband")
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		ports, _ := filepath.Glob(filepath.Join(base, entry.Name(), "ports", "*", "link_layer"))
+		for _, port := range ports {
+			if data, err := os.ReadFile(port); err == nil && strings.TrimSpace(string(data)) == "InfiniBand" {
+				return entry.Name()
+			}
+		}
+	}
+	return ""
 }
 
 // validateOKEProfileRequest rejects the claim settings the OKE profile does

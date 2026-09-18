@@ -27,9 +27,20 @@ The profile needs these conditions:
 
 The profile rejects `interface.type: Passthrough`, DHCP, unnumbered addressing, and addresses in the claim. A claim with its own `routes`, `rules`, or a VRF owns the routing.
 
-Native InfiniBand RDMA NICs and RDMA NICs on an IPv6 fabric get no profile and move into the pod as before.
+RDMA NICs on an IPv6 fabric get no profile and move into the pod as before.
 
 The profile needs `--profile-provider=cloud`, the default. With `webhook`, the webhook receives the `oke-rdma` profile and must resolve it itself. With `none` the profile is removed but the IPvlan type stays, so a claim needs its own `addresses` and the RDMA NIC stays on the host. The profile validation does not run under `none`, so a claim that sets `interface.type: Passthrough` explicitly moves the RDMA NIC into the pod, and the OCA routing of that RDMA NIC is not restored on return.
+
+## Native InfiniBand RDMA NICs
+
+A native InfiniBand RDMA NIC and its RDMA device stay on the host. Host monitoring reads both in the host namespace. A node with such RDMA NICs needs these settings:
+
+- DRANET runs with `--move-ib-interfaces=false` (`args.moveIBInterfaces: false` in the Helm chart). Each RDMA NIC is then an RDMA-only device without an interface name. Select it by the `dra.net/rdmaDevice` attribute, for example `mlx5_0`.
+- The RDMA subsystem runs in shared network namespace mode (`netns_mode=1` for `ib_core`).
+
+A pod gets only the character devices of the claimed RDMA device. No interface moves into the pod.
+
+With another setting, the provider fails the claim with an error that names the setting. This check needs `--profile-provider=cloud`, like the profile. With `none`, the claim moves the RDMA NIC or the RDMA device into the pod.
 
 ## Oracle Cloud Agent configuration
 
