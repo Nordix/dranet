@@ -588,7 +588,9 @@ func TestDynamicProfiles(t *testing.T) {
 		}
 	})
 
-	t.Run("Early Store Profile Release on Subsequent Failure", func(t *testing.T) {
+	t.Run("Profile Release on Subsequent Failure", func(t *testing.T) {
+		released := false
+		var releasedConfig *apis.NetworkConfig
 		fakeDB := newFakeInventoryDB()
 		fakeDB.GetProfileConfigFunc = func(deviceName string, claim *resourcev1.ResourceClaim, config *apis.NetworkConfig) (*apis.NetworkConfig, error) {
 			return &apis.NetworkConfig{
@@ -599,6 +601,14 @@ func TestDynamicProfiles(t *testing.T) {
 		}
 		fakeDB.GetDeviceConfigFunc = func(deviceName string) (*apis.NetworkConfig, bool) {
 			return &apis.NetworkConfig{Profile: "my-profile"}, true
+		}
+		fakeDB.ReleaseProfileConfigFunc = func(deviceName string, claimUID types.UID, config *apis.NetworkConfig) error {
+			released = true
+			releasedConfig = config
+			if claimUID != "claim-uid-leak" {
+				t.Errorf("Expected claimUID 'claim-uid-leak', got %v", claimUID)
+			}
+			return nil
 		}
 		// Cause a failure AFTER GetProfileConfig
 		fakeDB.GetNetInterfaceNameFunc = func(deviceName string) (string, error) {
@@ -642,14 +652,106 @@ func TestDynamicProfiles(t *testing.T) {
 			t.Fatalf("Expected simulated failure, got %v", res["claim-uid-leak"].Err)
 		}
 
-		// Verify the early device config was stored so Kubelet's call to UnprepareResourceClaims will clean it up
-		podCfg, ok := np.podConfigStore.GetPodConfig("pod-uid-leak")
-		if !ok {
-			t.Fatalf("Expected pod config to be stored early")
+		// Ensure the deferred cleanup released allocated profile resources and left no store state.
+		if !released {
+			t.Errorf("Expected the profile config to be released")
 		}
-		devCfg := podCfg.DeviceConfigs["device-1"]
-		if devCfg.NetworkInterfaceConfigInPod.Profile != "my-profile" {
-			t.Errorf("Expected profile 'my-profile' to be saved for cleanup, got '%v'", devCfg.NetworkInterfaceConfigInPod.Profile)
+		if releasedConfig == nil || len(releasedConfig.Interface.Addresses) != 1 || releasedConfig.Interface.Addresses[0] != "10.0.0.1/24" {
+			t.Errorf("Expected the allocated address to be released, got %v", releasedConfig)
+		}
+		if _, ok := np.podConfigStore.GetPodConfig("pod-uid-leak"); ok {
+			t.Errorf("Expected no pod config to be stored for a failed preparation")
+		}
+	})
+
+	t.Run("Retry Only Reallocates Failed Devices", func(t *testing.T) {
+		// deviceA is committed on the first call as an IB-only device; deviceB fails
+		// after its profile is allocated. On the second call, deviceA is short-circuited
+		// and reuses the stored config, while deviceB allocates a profile again.
+		const (
+			deviceA = "ib-dev-a"
+			deviceB = "net-dev-b"
+		)
+
+		fakeDB := newFakeInventoryDB()
+
+		profileCallsByDevice := map[string]int{}
+		// Count the profile calls and derive the address from the
+		// count, so a second call yields a different address.
+		fakeDB.GetProfileConfigFunc = func(deviceName string, claim *resourcev1.ResourceClaim, config *apis.NetworkConfig) (*apis.NetworkConfig, error) {
+			profileCallsByDevice[deviceName]++
+			return &apis.NetworkConfig{
+				Interface: apis.InterfaceConfig{
+					Addresses: []string{fmt.Sprintf("10.0.0.%d/24", profileCallsByDevice[deviceName])},
+				},
+			}, nil
+		}
+
+		fakeDB.GetDeviceConfigFunc = func(deviceName string) (*apis.NetworkConfig, bool) {
+			return &apis.NetworkConfig{Profile: "my-profile"}, true
+		}
+		fakeDB.IsIBOnlyDeviceFunc = func(deviceName string) bool {
+			return deviceName == deviceA
+		}
+		fakeDB.GetRDMADeviceNameFunc = func(deviceName string) (string, error) {
+			return "rdma0", nil
+		}
+		fakeDB.GetNetInterfaceNameFunc = func(deviceName string) (string, error) {
+			return "", fmt.Errorf("simulated failure getting interface name")
+		}
+
+		np := &NetworkDriver{
+			netdb:          fakeDB,
+			driverName:     "test.driver",
+			podConfigStore: mustNewPodConfigStore(),
+			eventRecorder:  record.NewFakeRecorder(100),
+		}
+
+		claims := []*resourcev1.ResourceClaim{
+			{
+				ObjectMeta: metav1.ObjectMeta{UID: "claim-uid-retry", Namespace: "default", Name: "claim-retry"},
+				Status: resourcev1.ResourceClaimStatus{
+					ReservedFor: []resourcev1.ResourceClaimConsumerReference{
+						{APIGroup: "", Resource: "pods", Name: "test-pod", UID: "pod-uid-retry"},
+					},
+					Allocation: &resourcev1.AllocationResult{
+						Devices: resourcev1.DeviceAllocationResult{
+							Results: []resourcev1.DeviceRequestAllocationResult{
+								{Driver: "test.driver", Device: deviceA, Request: "req-a"},
+								{Driver: "test.driver", Device: deviceB, Request: "req-b"},
+							},
+							Config: []resourcev1.DeviceAllocationConfiguration{},
+						},
+					},
+				},
+			},
+		}
+
+		// The first call prepares deviceA and fails on deviceB.
+		res, err := np.PrepareResourceClaims(ctx, claims)
+		if err != nil {
+			t.Fatalf("PrepareResourceClaims failed: %v", err)
+		}
+		if res["claim-uid-retry"].Err == nil || !strings.Contains(res["claim-uid-retry"].Err.Error(), "simulated failure") {
+			t.Fatalf("Expected simulated failure, got %v", res["claim-uid-retry"].Err)
+		}
+
+		// The second call reuses deviceA and resolves deviceB again.
+		res, err = np.PrepareResourceClaims(ctx, claims)
+		if err != nil {
+			t.Fatalf("PrepareResourceClaims failed: %v", err)
+		}
+
+		if got := profileCallsByDevice[deviceA]; got != 1 {
+			t.Errorf("Expected deviceA to allocate a profile once, got %d", got)
+		}
+		if got := profileCallsByDevice[deviceB]; got != 2 {
+			t.Errorf("Expected deviceB to allocate a profile twice, got %d", got)
+		}
+		podCfg, _ := np.podConfigStore.GetPodConfig("pod-uid-retry")
+		addrs := podCfg.DeviceConfigs[deviceA].NetworkInterfaceConfigInPod.Interface.Addresses
+		if len(addrs) != 1 || addrs[0] != "10.0.0.1/24" {
+			t.Errorf("Expected deviceA to keep its first address 10.0.0.1/24, got %v", addrs)
 		}
 	})
 }
