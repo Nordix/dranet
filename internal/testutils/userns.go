@@ -64,11 +64,26 @@ func IsSupported() bool {
 //
 // extraCloneflags can be used to request additional namespace types
 // (e.g., syscall.CLONE_NEWNET).
+//
+// Requesting syscall.CLONE_NEWNS in extraCloneflags provides a private
+// tmpfs on /run so that new network namespaces can be mounted for the test.
 func Run(t *testing.T, f func(t *testing.T), extraCloneflags ...uintptr) {
 	const subprocessEnvKey = "GO_USERNS_SUBPROCESS_KEY"
 
+	cloneflags := uintptr(syscall.CLONE_NEWUSER)
+	for _, flag := range extraCloneflags {
+		cloneflags |= flag
+	}
+
 	// 1. If we are already inside the subprocess, run the actual test logic.
 	if testIDString, ok := os.LookupEnv(subprocessEnvKey); ok && testIDString == "1" {
+		// With a private mount namespace, replace /run with a fresh tmpfs so
+		// the test can bind-mount network namespaces without touching the host.
+		if cloneflags&syscall.CLONE_NEWNS != 0 {
+			if err := syscall.Mount("tmpfs", "/run", "tmpfs", 0, ""); err != nil {
+				t.Fatalf("failed to mount a private tmpfs on /run in the subprocess: %v", err)
+			}
+		}
 		t.Run("subprocess", f)
 		return
 	}
@@ -93,13 +108,7 @@ func Run(t *testing.T, f func(t *testing.T), extraCloneflags ...uintptr) {
 	cmd.Env = append(cmd.Env, "PATH=/usr/local/sbin:/usr/sbin:/sbin:"+os.Getenv("PATH"))
 	cmd.Stdin = os.Stdin
 
-	// 4. Configure the namespace clone flags.
-	cloneflags := uintptr(syscall.CLONE_NEWUSER)
-	for _, flag := range extraCloneflags {
-		cloneflags |= flag
-	}
-
-	// Map ourselves to root inside the new user namespace.
+	// 4. Map ourselves to root inside the new user namespace.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:  cloneflags,
 		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},

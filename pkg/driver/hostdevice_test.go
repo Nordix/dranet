@@ -25,6 +25,7 @@ import (
 	"path"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/vishvananda/netlink"
@@ -33,14 +34,15 @@ import (
 	sysctltesting "k8s.io/component-helpers/node/util/sysctl/testing"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/dranet/internal/nlwrap"
+	userns "sigs.k8s.io/dranet/internal/testutils"
 	"sigs.k8s.io/dranet/pkg/apis"
 )
 
 func Test_nhNetdev(t *testing.T) {
-	if os.Getuid() != 0 {
-		t.Skip("Test requires root privileges.")
-	}
+	userns.Run(t, test_nhNetdev_Namespaced, syscall.CLONE_NEWNET, syscall.CLONE_NEWNS)
+}
 
+func test_nhNetdev_Namespaced(t *testing.T) {
 	origns, err := netns.Get()
 	if err != nil {
 		t.Fatalf("unexpected error trying to get namespace: %v", err)
@@ -246,10 +248,10 @@ func Test_nhNetdev(t *testing.T) {
 }
 
 func Test_nsDetachNetdevFromNSUsesOpenNamespace(t *testing.T) {
-	if os.Getuid() != 0 {
-		t.Skip("Test requires root privileges.")
-	}
+	userns.Run(t, test_nsDetachNetdevFromNSUsesOpenNamespace_Namespaced, syscall.CLONE_NEWNET, syscall.CLONE_NEWNS)
+}
 
+func test_nsDetachNetdevFromNSUsesOpenNamespace_Namespaced(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 

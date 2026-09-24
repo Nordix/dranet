@@ -19,22 +19,23 @@ package driver
 import (
 	"crypto/rand"
 	"fmt"
-	"os"
 	"path"
 	"runtime"
+	"syscall"
 	"testing"
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"sigs.k8s.io/dranet/internal/nlwrap"
+	userns "sigs.k8s.io/dranet/internal/testutils"
 	"sigs.k8s.io/dranet/pkg/apis"
 )
 
 func Test_applyRoutingConfig(t *testing.T) {
-	if os.Getuid() != 0 {
-		t.Skip("Test requires root privileges.")
-	}
+	userns.Run(t, test_applyRoutingConfig_Namespaced, syscall.CLONE_NEWNET, syscall.CLONE_NEWNS)
+}
 
+func test_applyRoutingConfig_Namespaced(t *testing.T) {
 	// NewNamed moves the calling thread into the new namespace, so pin the
 	// goroutine and put the thread back where we found it afterwards.
 	runtime.LockOSThread()

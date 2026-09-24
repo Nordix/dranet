@@ -19,24 +19,25 @@ package driver
 import (
 	"crypto/rand"
 	"fmt"
-	"os"
 	"os/exec"
 	"path"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"sigs.k8s.io/dranet/internal/nlwrap"
+	userns "sigs.k8s.io/dranet/internal/testutils"
 	"sigs.k8s.io/dranet/pkg/apis"
 )
 
 func Test_applyEthtoolConfig(t *testing.T) {
-	if os.Getuid() != 0 {
-		t.Skip("Test requires root privileges.")
-	}
+	userns.Run(t, test_applyEthtoolConfig_Namespaced, syscall.CLONE_NEWNET, syscall.CLONE_NEWNS)
+}
 
+func test_applyEthtoolConfig_Namespaced(t *testing.T) {
 	origns, err := netns.Get()
 	if err != nil {
 		t.Fatalf("unexpected error trying to get namespace: %v", err)

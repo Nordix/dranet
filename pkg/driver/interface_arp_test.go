@@ -20,9 +20,9 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"os"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -31,6 +31,7 @@ import (
 	sysctltesting "k8s.io/component-helpers/node/util/sysctl/testing"
 	"k8s.io/utils/ptr"
 
+	userns "sigs.k8s.io/dranet/internal/testutils"
 	"sigs.k8s.io/dranet/pkg/apis"
 )
 
@@ -160,10 +161,10 @@ func TestApplyInterfaceARPConfigNoConfigDoesNotEnterNamespace(t *testing.T) {
 }
 
 func TestApplyInterfaceARPConfigUsesOpenNamespace(t *testing.T) {
-	if os.Getuid() != 0 {
-		t.Skip("Test requires root privileges.")
-	}
+	userns.Run(t, testApplyInterfaceARPConfigUsesOpenNamespace_Namespaced, syscall.CLONE_NEWNET, syscall.CLONE_NEWNS)
+}
 
+func testApplyInterfaceARPConfigUsesOpenNamespace_Namespaced(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 

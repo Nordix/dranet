@@ -21,12 +21,12 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net"
-	"os"
 	"os/exec"
 	"path"
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/vishvananda/netlink"
@@ -39,13 +39,14 @@ import (
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/dranet/internal/nlwrap"
+	userns "sigs.k8s.io/dranet/internal/testutils"
 	"sigs.k8s.io/dranet/pkg/apis"
 )
 
 const testParentMAC = "00:11:22:33:44:55"
 
 // ipvlanTestEnv is a dedicated network namespace plus a dummy parent
-// interface on the host. It needs root.
+// interface on the host.
 type ipvlanTestEnv struct {
 	origns netns.NsHandle
 	testNS netns.NsHandle
@@ -55,9 +56,6 @@ type ipvlanTestEnv struct {
 
 func newIPVlanTestEnv(t *testing.T, parentMTU int) *ipvlanTestEnv {
 	t.Helper()
-	if os.Getuid() != 0 {
-		t.Skip("Test requires root privileges.")
-	}
 
 	origns, err := netns.Get()
 	if err != nil {
@@ -178,6 +176,10 @@ func assertOnlyLoopback(t *testing.T, env *ipvlanTestEnv) {
 }
 
 func TestSubinterface_IPVlan(t *testing.T) {
+	userns.Run(t, testSubinterface_IPVlan_Namespaced, syscall.CLONE_NEWNET, syscall.CLONE_NEWNS)
+}
+
+func testSubinterface_IPVlan_Namespaced(t *testing.T) {
 	env := newIPVlanTestEnv(t, 1400)
 
 	config := apis.InterfaceConfig{
@@ -292,6 +294,10 @@ func TestSubinterface_IPVlan(t *testing.T) {
 }
 
 func TestSubinterface_IPVlanMTU(t *testing.T) {
+	userns.Run(t, testSubinterface_IPVlanMTU_Namespaced, syscall.CLONE_NEWNET, syscall.CLONE_NEWNS)
+}
+
+func testSubinterface_IPVlanMTU_Namespaced(t *testing.T) {
 	tests := []struct {
 		name string
 		mtu  *int32
@@ -320,6 +326,10 @@ func TestSubinterface_IPVlanMTU(t *testing.T) {
 }
 
 func TestSubinterface_IPVlanRejectsMTUAboveParent(t *testing.T) {
+	userns.Run(t, testSubinterface_IPVlanRejectsMTUAboveParent_Namespaced, syscall.CLONE_NEWNET, syscall.CLONE_NEWNS)
+}
+
+func testSubinterface_IPVlanRejectsMTUAboveParent_Namespaced(t *testing.T) {
 	env := newIPVlanTestEnv(t, 1400)
 	config := apis.InterfaceConfig{
 		Name:      "dranet0",
@@ -336,6 +346,10 @@ func TestSubinterface_IPVlanRejectsMTUAboveParent(t *testing.T) {
 }
 
 func TestSubinterface_IPVlanRollsBackOnSysctlFailure(t *testing.T) {
+	userns.Run(t, testSubinterface_IPVlanRollsBackOnSysctlFailure_Namespaced, syscall.CLONE_NEWNET, syscall.CLONE_NEWNS)
+}
+
+func testSubinterface_IPVlanRollsBackOnSysctlFailure_Namespaced(t *testing.T) {
 	env := newIPVlanTestEnv(t, 1400)
 	config := apis.InterfaceConfig{
 		Name:      "dranet0",
@@ -361,6 +375,10 @@ func TestSubinterface_IPVlanRollsBackOnSysctlFailure(t *testing.T) {
 }
 
 func TestSubinterface_IPVlanRollsBackOnNameCollision(t *testing.T) {
+	userns.Run(t, testSubinterface_IPVlanRollsBackOnNameCollision_Namespaced, syscall.CLONE_NEWNET, syscall.CLONE_NEWNS)
+}
+
+func testSubinterface_IPVlanRollsBackOnNameCollision_Namespaced(t *testing.T) {
 	env := newIPVlanTestEnv(t, 1400)
 	config := apis.InterfaceConfig{
 		Name:      "dranet0",
@@ -400,6 +418,10 @@ func TestSubinterface_IPVlanRollsBackOnNameCollision(t *testing.T) {
 }
 
 func TestCreateSubinterfaceInNS_RollsBackOnConfigureFailure(t *testing.T) {
+	userns.Run(t, testCreateSubinterfaceInNS_RollsBackOnConfigureFailure_Namespaced, syscall.CLONE_NEWNET, syscall.CLONE_NEWNS)
+}
+
+func testCreateSubinterfaceInNS_RollsBackOnConfigureFailure_Namespaced(t *testing.T) {
 	env := newIPVlanTestEnv(t, 1400)
 	deviceCfg := DeviceConfig{
 		Claim: types.NamespacedName{Namespace: "ns", Name: "claim1"},
@@ -430,6 +452,10 @@ func TestCreateSubinterfaceInNS_RollsBackOnConfigureFailure(t *testing.T) {
 }
 
 func TestCreateSubinterfaceInNS_ReportsStatusOnSuccess(t *testing.T) {
+	userns.Run(t, testCreateSubinterfaceInNS_ReportsStatusOnSuccess_Namespaced, syscall.CLONE_NEWNET, syscall.CLONE_NEWNS)
+}
+
+func testCreateSubinterfaceInNS_ReportsStatusOnSuccess_Namespaced(t *testing.T) {
 	env := newIPVlanTestEnv(t, 1400)
 	deviceCfg := DeviceConfig{
 		Claim: types.NamespacedName{Namespace: "ns", Name: "claim1"},

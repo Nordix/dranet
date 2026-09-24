@@ -37,7 +37,8 @@ jobs:
       with:
         go-version: ${{ matrix.go-version }}
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-    - run: sudo make test
+    - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+    - run: make test
     - run: make lint
     - run: make verify
 
