@@ -103,6 +103,18 @@ func fakeInterface(t *testing.T, ifName, pciAddress string, hardwareType int) {
 	}
 }
 
+// fakeRDMADevice adds an RDMA device with the given link layer to a PCI device.
+func fakeRDMADevice(t *testing.T, pciAddress, rdmaDevice, linkLayer string) {
+	t.Helper()
+	port := filepath.Join(sysfsPCIDevices, pciAddress, "infiniband", rdmaDevice, "ports", "1")
+	if err := os.MkdirAll(port, 0o755); err != nil {
+		t.Fatalf("MkdirAll() returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(port, "link_layer"), []byte(linkLayer+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() returned error: %v", err)
+	}
+}
+
 // fakeNetnsMode writes the ib_core netns_mode parameter.
 func fakeNetnsMode(t *testing.T, value string) {
 	t.Helper()
@@ -153,6 +165,10 @@ func fakeOCAFile(t *testing.T, name, content string) {
 func testVNIC() *primaryVNIC {
 	return &primaryVNIC{IPv4: netip.MustParseAddr("10.140.77.19"), Subnet: netip.MustParsePrefix("10.140.64.0/19")}
 }
+
+// testIPoIBMAC is the 20-byte address the inventory reports for an attached
+// IPoIB interface (rdma0 on a BM.GPU.GB200.4 node).
+const testIPoIBMAC = "00:00:10:48:fe:80:00:00:00:00:00:00:b8:e9:24:03:00:20:eb:60"
 
 // compareVNIC lets cmp compare the netip values inside primaryVNIC.
 var compareVNIC = cmpopts.EquateComparable(netip.Addr{}, netip.Prefix{})
@@ -376,7 +392,10 @@ func TestOCIDSuffix(t *testing.T) {
 
 func TestGetDeviceConfig(t *testing.T) {
 	profile := &apis.NetworkConfig{Profile: okeRDMAProfile, Interface: apis.InterfaceConfig{Type: apis.InterfaceTypeIPVLAN}}
+	// guard has no interface type: GetProfileConfig fails the claim first.
+	guard := &apis.NetworkConfig{Profile: okeRDMAProfile}
 	rdma0ID := cloudprovider.DeviceIdentifiers{Name: "rdma0", PCIAddress: "0000:0c:00.0"}
+	rdma0AttachedID := cloudprovider.DeviceIdentifiers{Name: "rdma0", PCIAddress: "0000:0c:00.0", MAC: testIPoIBMAC}
 	tests := []struct {
 		name         string
 		ifName       string
@@ -385,8 +404,13 @@ func TestGetDeviceConfig(t *testing.T) {
 		addresses    []string
 		metadata     *okeMetadata
 		namedNICs    bool
-		id           cloudprovider.DeviceIdentifiers
-		want         *apis.NetworkConfig
+		netnsMode    string
+		// rdmaLinkLayer adds an RDMA device to the PCI device of the request.
+		rdmaLinkLayer string
+		// extraIfName is a second interface of the same PCI device.
+		extraIfName string
+		id          cloudprovider.DeviceIdentifiers
+		want        *apis.NetworkConfig
 	}{
 		{
 			name: "device without a PCI address",
@@ -444,11 +468,67 @@ func TestGetDeviceConfig(t *testing.T) {
 			id:           cloudprovider.DeviceIdentifiers{Name: "eth0", PCIAddress: "0000:0c:00.0"},
 		},
 		{
-			name:         "InfiniBand RDMA NIC gets no profile",
-			ifName:       "rdma0",
-			pciAddress:   "0000:0c:00.0",
-			hardwareType: unix.ARPHRD_INFINIBAND,
-			id:           rdma0ID,
+			name:          "RDMA-only InfiniBand device in shared mode gets no profile",
+			ifName:        "rdma0",
+			pciAddress:    "0000:0c:00.0",
+			hardwareType:  unix.ARPHRD_INFINIBAND,
+			rdmaLinkLayer: "InfiniBand",
+			netnsMode:     "Y",
+			id:            rdma0ID,
+		},
+		{
+			name:          "InfiniBand NIC with an attached interface gets the guard profile",
+			ifName:        "rdma0",
+			pciAddress:    "0000:0c:00.0",
+			hardwareType:  unix.ARPHRD_INFINIBAND,
+			rdmaLinkLayer: "InfiniBand",
+			netnsMode:     "Y",
+			id:            rdma0AttachedID,
+			want:          guard,
+		},
+		{
+			name:          "RDMA-only InfiniBand device in exclusive mode gets the guard profile",
+			ifName:        "rdma0",
+			pciAddress:    "0000:0c:00.0",
+			hardwareType:  unix.ARPHRD_INFINIBAND,
+			rdmaLinkLayer: "InfiniBand",
+			netnsMode:     "N",
+			id:            rdma0ID,
+			want:          guard,
+		},
+		{
+			name:          "InfiniBand RDMA device without an interface in exclusive mode gets the guard profile",
+			rdmaLinkLayer: "InfiniBand",
+			netnsMode:     "N",
+			id:            rdma0ID,
+			want:          guard,
+		},
+		{
+			name:          "InfiniBand RDMA device with two interfaces in exclusive mode gets the guard profile",
+			ifName:        "rdma0",
+			extraIfName:   "rdma0.8001",
+			pciAddress:    "0000:0c:00.0",
+			hardwareType:  unix.ARPHRD_INFINIBAND,
+			rdmaLinkLayer: "InfiniBand",
+			netnsMode:     "N",
+			id:            rdma0ID,
+			want:          guard,
+		},
+		{
+			name:          "InfiniBand RDMA device without an interface in shared mode gets no profile",
+			rdmaLinkLayer: "InfiniBand",
+			netnsMode:     "Y",
+			id:            rdma0ID,
+		},
+		{
+			name:          "Ethernet RDMA NIC with a MAC in exclusive mode keeps the IPvlan profile",
+			ifName:        "rdma0",
+			pciAddress:    "0000:0c:00.0",
+			hardwareType:  unix.ARPHRD_ETHER,
+			rdmaLinkLayer: "Ethernet",
+			netnsMode:     "N",
+			id:            cloudprovider.DeviceIdentifiers{Name: "rdma0", PCIAddress: "0000:0c:00.0", MAC: "02:00:17:01:01:4c"},
+			want:          profile,
 		},
 		{
 			name:         "Ethernet interface without addresses gets no profile",
@@ -472,8 +552,17 @@ func TestGetDeviceConfig(t *testing.T) {
 			if tt.ifName != "" {
 				fakeInterface(t, tt.ifName, tt.pciAddress, tt.hardwareType)
 			}
+			if tt.extraIfName != "" {
+				fakeInterface(t, tt.extraIfName, tt.pciAddress, tt.hardwareType)
+			}
+			if tt.rdmaLinkLayer != "" {
+				fakeRDMADevice(t, tt.id.PCIAddress, "mlx5_0", tt.rdmaLinkLayer)
+			}
 			if tt.addresses != nil {
 				fakeInterfaceAddresses(t, tt.ifName, tt.addresses...)
+			}
+			if tt.netnsMode != "" {
+				fakeNetnsMode(t, tt.netnsMode)
 			}
 			instance := newOKEInstance(tt.metadata, nil)
 			instance.addressFallback = !tt.namedNICs
@@ -521,6 +610,13 @@ func TestGetProfileConfig(t *testing.T) {
 		arpIgnore   string
 		arpAnnounce string
 		extra       []fakeRDMANic
+		// mac is set when the inventory attached the interface to the device.
+		mac       string
+		netnsMode string
+		// rdmaLinkLayer adds an RDMA device to the PCI device of the request.
+		rdmaLinkLayer string
+		// noInterface leaves the PCI device without a network interface.
+		noInterface bool
 		want        *apis.NetworkConfig
 		wantErr     string
 	}{
@@ -712,12 +808,61 @@ func TestGetProfileConfig(t *testing.T) {
 			wantErr:   `address mode "host-serial"`,
 		},
 		{
-			name:         "native InfiniBand parent",
-			config:       profileConfig(apis.InterfaceConfig{}),
-			metadata:     ipv4Fabric(),
-			ifName:       "rdma0",
-			hardwareType: unix.ARPHRD_INFINIBAND,
-			wantErr:      "requires an Ethernet parent",
+			name:          "native InfiniBand parent",
+			config:        profileConfig(apis.InterfaceConfig{}),
+			metadata:      ipv4Fabric(),
+			ifName:        "rdma0",
+			hardwareType:  unix.ARPHRD_INFINIBAND,
+			rdmaLinkLayer: "InfiniBand",
+			wantErr:       "requires an Ethernet parent",
+		},
+		{
+			// No metadata: an InfiniBand node never reads the VNIC, and the
+			// guard must answer before the metadata checks.
+			name:          "InfiniBand NIC with an attached interface stays on the host",
+			config:        profileConfig(apis.InterfaceConfig{}),
+			ifName:        "rdma0",
+			hardwareType:  unix.ARPHRD_INFINIBAND,
+			rdmaLinkLayer: "InfiniBand",
+			mac:           testIPoIBMAC,
+			wantErr:       "run DRANET with --move-ib-interfaces=false",
+		},
+		{
+			name:          "InfiniBand NIC with an attached interface reports the flag before passthrough",
+			config:        profileConfig(apis.InterfaceConfig{Type: apis.InterfaceTypePassthrough}),
+			ifName:        "rdma0",
+			hardwareType:  unix.ARPHRD_INFINIBAND,
+			rdmaLinkLayer: "InfiniBand",
+			mac:           testIPoIBMAC,
+			wantErr:       "run DRANET with --move-ib-interfaces=false",
+		},
+		{
+			name:          "RDMA-only InfiniBand device in exclusive mode stays on the host",
+			config:        profileConfig(apis.InterfaceConfig{}),
+			ifName:        "rdma0",
+			hardwareType:  unix.ARPHRD_INFINIBAND,
+			rdmaLinkLayer: "InfiniBand",
+			netnsMode:     "N",
+			wantErr:       "use shared mode (ib_core netns_mode=1)",
+		},
+		{
+			name:          "InfiniBand RDMA device without an interface in exclusive mode stays on the host",
+			config:        profileConfig(apis.InterfaceConfig{}),
+			noInterface:   true,
+			rdmaLinkLayer: "InfiniBand",
+			netnsMode:     "N",
+			wantErr:       "the native InfiniBand RDMA device mlx5_0 stays on the host",
+		},
+		{
+			name:          "Ethernet RDMA NIC with a MAC in exclusive mode resolves",
+			config:        profileConfig(apis.InterfaceConfig{}),
+			metadata:      ipv4Fabric(),
+			ifName:        "rdma0",
+			addresses:     []string{"10.224.13.19/12"},
+			rdmaLinkLayer: "Ethernet",
+			mac:           "02:00:17:01:01:4c",
+			netnsMode:     "N",
+			want:          rdma0Config,
 		},
 		{
 			name:      "RDMA NIC name and address disagree",
@@ -902,11 +1047,16 @@ func TestGetProfileConfig(t *testing.T) {
 			if hardwareType == 0 {
 				hardwareType = unix.ARPHRD_ETHER
 			}
-			fakeInterface(t, tt.ifName, "0000:0c:00.0", hardwareType)
+			if !tt.noInterface {
+				fakeInterface(t, tt.ifName, "0000:0c:00.0", hardwareType)
+				fakeARP(t, tt.ifName, arpValue(tt.arpIgnore, "1"), arpValue(tt.arpAnnounce, "2"))
+			}
+			if tt.rdmaLinkLayer != "" {
+				fakeRDMADevice(t, "0000:0c:00.0", "mlx5_0", tt.rdmaLinkLayer)
+			}
 			if tt.addresses != nil {
 				fakeInterfaceAddresses(t, tt.ifName, tt.addresses...)
 			}
-			fakeARP(t, tt.ifName, arpValue(tt.arpIgnore, "1"), arpValue(tt.arpAnnounce, "2"))
 			for _, extra := range tt.extra {
 				fakeInterface(t, extra.ifName, "", extra.hardwareType)
 				if extra.addresses != nil {
@@ -914,11 +1064,15 @@ func TestGetProfileConfig(t *testing.T) {
 				}
 			}
 
+			if tt.netnsMode != "" {
+				fakeNetnsMode(t, tt.netnsMode)
+			}
+
 			instance := newOKEInstance(tt.metadata, nil)
 			if tt.ocaConfig != nil {
 				instance.ocaConfig = *tt.ocaConfig
 			}
-			id := cloudprovider.DeviceIdentifiers{Name: tt.ifName, PCIAddress: "0000:0c:00.0"}
+			id := cloudprovider.DeviceIdentifiers{Name: tt.ifName, PCIAddress: "0000:0c:00.0", MAC: tt.mac}
 			got, err := instance.GetProfileConfig(id, nil, tt.config)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
@@ -981,6 +1135,80 @@ func TestGetProfileConfigValidatesLayoutOnce(t *testing.T) {
 	}
 	if instance.layoutValidated.Load() {
 		t.Fatal("layoutValidated is set although the address mode is known")
+	}
+}
+
+// rdmaDeviceFixture describes one RDMA device under a PCI device. An empty
+// linkLayers list creates the device without ports. An empty link layer
+// creates the port without its link_layer file, and unreadableLinkLayer
+// creates link_layer as a directory, which cannot be read as a file.
+type rdmaDeviceFixture struct {
+	name       string
+	linkLayers []string
+}
+
+// unreadableLinkLayer marks a port whose link_layer entry cannot be read.
+const unreadableLinkLayer = "<unreadable>"
+
+func TestInfiniBandRDMADevice(t *testing.T) {
+	const pciAddress = "0000:0c:00.0"
+	tests := []struct {
+		name       string
+		pciAddress string
+		// noDir leaves the PCI device without an infiniband directory.
+		noDir   bool
+		devices []rdmaDeviceFixture
+		want    string
+	}{
+		{name: "empty PCI address", noDir: true},
+		{name: "no infiniband directory", pciAddress: pciAddress, noDir: true},
+		{name: "empty infiniband directory", pciAddress: pciAddress},
+		{name: "device without ports", pciAddress: pciAddress, devices: []rdmaDeviceFixture{{name: "mlx5_0"}}},
+		{name: "port without a link layer file", pciAddress: pciAddress, devices: []rdmaDeviceFixture{{name: "mlx5_0", linkLayers: []string{""}}}},
+		{name: "unreadable link layer entry", pciAddress: pciAddress, devices: []rdmaDeviceFixture{{name: "mlx5_0", linkLayers: []string{unreadableLinkLayer}}}},
+		{name: "unreadable port before an InfiniBand port", pciAddress: pciAddress, devices: []rdmaDeviceFixture{{name: "mlx5_0", linkLayers: []string{unreadableLinkLayer, "InfiniBand"}}}, want: "mlx5_0"},
+		{name: "Ethernet device", pciAddress: pciAddress, devices: []rdmaDeviceFixture{{name: "mlx5_0", linkLayers: []string{"Ethernet"}}}},
+		{name: "InfiniBand device", pciAddress: pciAddress, devices: []rdmaDeviceFixture{{name: "mlx5_0", linkLayers: []string{"InfiniBand"}}}, want: "mlx5_0"},
+		{name: "InfiniBand on the second port", pciAddress: pciAddress, devices: []rdmaDeviceFixture{{name: "mlx5_0", linkLayers: []string{"Ethernet", "InfiniBand"}}}, want: "mlx5_0"},
+		{name: "Ethernet device before an InfiniBand device", pciAddress: pciAddress, devices: []rdmaDeviceFixture{{name: "mlx5_0", linkLayers: []string{"Ethernet"}}, {name: "mlx5_1", linkLayers: []string{"InfiniBand"}}}, want: "mlx5_1"},
+		{name: "two InfiniBand devices give the first name", pciAddress: pciAddress, devices: []rdmaDeviceFixture{{name: "mlx5_1", linkLayers: []string{"InfiniBand"}}, {name: "mlx5_0", linkLayers: []string{"InfiniBand"}}}, want: "mlx5_0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeSysfs(t)
+			base := filepath.Join(sysfsPCIDevices, pciAddress, "infiniband")
+			if !tt.noDir {
+				if err := os.MkdirAll(base, 0o755); err != nil {
+					t.Fatalf("MkdirAll() returned error: %v", err)
+				}
+			}
+			for _, device := range tt.devices {
+				if err := os.MkdirAll(filepath.Join(base, device.name), 0o755); err != nil {
+					t.Fatalf("MkdirAll() returned error: %v", err)
+				}
+				for i, linkLayer := range device.linkLayers {
+					port := filepath.Join(base, device.name, "ports", strconv.Itoa(i+1))
+					if err := os.MkdirAll(port, 0o755); err != nil {
+						t.Fatalf("MkdirAll() returned error: %v", err)
+					}
+					switch linkLayer {
+					case "":
+						continue
+					case unreadableLinkLayer:
+						if err := os.Mkdir(filepath.Join(port, "link_layer"), 0o755); err != nil {
+							t.Fatalf("Mkdir() returned error: %v", err)
+						}
+						continue
+					}
+					if err := os.WriteFile(filepath.Join(port, "link_layer"), []byte(linkLayer+"\n"), 0o644); err != nil {
+						t.Fatalf("WriteFile() returned error: %v", err)
+					}
+				}
+			}
+			if got := infiniBandRDMADevice(tt.pciAddress); got != tt.want {
+				t.Errorf("infiniBandRDMADevice(%q) = %q, want %q", tt.pciAddress, got, tt.want)
+			}
+		})
 	}
 }
 
