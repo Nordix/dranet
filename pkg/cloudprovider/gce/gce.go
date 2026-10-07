@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/compute/metadata"
+	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -35,6 +36,7 @@ import (
 
 	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/dranet/internal/nlwrap"
 	"sigs.k8s.io/dranet/pkg/apis"
 	"sigs.k8s.io/dranet/pkg/cloudprovider"
 	"sigs.k8s.io/dranet/pkg/ipam"
@@ -90,6 +92,7 @@ type gceNetworkInterface struct {
 	IPAliases   []string `json:"ipAliases,omitempty"`
 	Gateway     string   `json:"gateway,omitempty"`
 	GatewayIPv6 string   `json:"gatewayIpv6,omitempty"`
+	NicType     string   `json:"nicType,omitempty"`
 }
 
 var _ cloudprovider.CloudInstance = (*GCEInstance)(nil)
@@ -194,6 +197,20 @@ func (g *GCEInstance) GetProfileConfig(id cloudprovider.DeviceIdentifiers, claim
 		return nil, nil
 	}
 
+	switch g.Type {
+	case "a5x-highgpu-4g-metal", "a5x-highgpu-4g-metal-nolssd":
+		if interfaceForMac.NicType == "IRDMA" && config != nil && config.Interface.IsSubinterface() {
+			return nil, fmt.Errorf("subinterfaces are not supported on IRDMA device %q, only Passthrough is allowed", id.Name)
+		}
+		var err error
+		if interfaceForMac.IPv6, err = getNICIPv6Prefix(id.Name); err != nil {
+			return nil, fmt.Errorf("discovering IPv6 prefix from host for device %q: %w", id.Name, err)
+		}
+		if interfaceForMac.GatewayIPv6, err = getIPv6DefaultGateway(id.Name); err != nil {
+			return nil, fmt.Errorf("discovering IPv6 gateway from host for device %q: %w", id.Name, err)
+		}
+	}
+
 	if config == nil || !config.Interface.IsSubinterface() {
 		return nil, nil
 	}
@@ -222,6 +239,61 @@ func (g *GCEInstance) GetProfileConfig(id cloudprovider.DeviceIdentifiers, claim
 		return nil, fmt.Errorf("allocating subinterface addresses for device %q: %w", id.MAC, err)
 	}
 	return sourceRoutingConfig(interfaceForMac, config, addrs), nil
+}
+
+// getNICIPv6Prefix queries the host interface ifName via netlink and returns
+// the global IPv6 prefix of ifName.
+func getNICIPv6Prefix(ifName string) ([]string, error) {
+	if ifName == "" {
+		return nil, fmt.Errorf("interface name is empty")
+	}
+	link, err := nlwrap.LinkByName(ifName)
+	if err != nil {
+		return nil, fmt.Errorf("could not find interface %s: %w", ifName, err)
+	}
+	addrs, err := nlwrap.AddrList(link, netlink.FAMILY_V6)
+	if err != nil {
+		return nil, fmt.Errorf("could not list IPv6 addresses for %s: %w", ifName, err)
+	}
+	for _, addr := range addrs {
+		if !addr.IP.IsGlobalUnicast() {
+			continue
+		}
+		// getIPv6Range needs room for the marker group plus host bits.
+		if ones, bits := addr.Mask.Size(); bits != 128 || ones > 96 {
+			continue
+		}
+		prefix := &net.IPNet{IP: addr.IP.Mask(addr.Mask), Mask: addr.Mask}
+		return []string{prefix.String()}, nil
+	}
+	return nil, fmt.Errorf("no global IPv6 prefix found on interface %s", ifName)
+}
+
+// getIPv6DefaultGateway returns the gateway of the IPv6 default route egressing via ifName.
+func getIPv6DefaultGateway(ifName string) (string, error) {
+	if ifName == "" {
+		return "", fmt.Errorf("interface name is empty")
+	}
+	link, err := nlwrap.LinkByName(ifName)
+	if err != nil {
+		return "", fmt.Errorf("could not find interface %s: %w", ifName, err)
+	}
+	filter := &netlink.Route{LinkIndex: link.Attrs().Index}
+	routes, err := nlwrap.RouteListFiltered(netlink.FAMILY_V6, filter, netlink.RT_FILTER_OIF|netlink.RT_FILTER_TABLE)
+	if err != nil {
+		return "", fmt.Errorf("could not list IPv6 routes for %s: %w", ifName, err)
+	}
+	for _, r := range routes {
+		if r.Dst != nil {
+			if ones, _ := r.Dst.Mask.Size(); ones != 0 || !r.Dst.IP.IsUnspecified() {
+				continue
+			}
+		}
+		if addr, _ := netip.AddrFromSlice(r.Gw); addr.Is6() {
+			return addr.String(), nil
+		}
+	}
+	return "", fmt.Errorf("no IPv6 default route found on interface %s", ifName)
 }
 
 // sourceRoutingConfig builds the profile config for a subinterface: the newly
@@ -418,7 +490,8 @@ func getIPv6Range(baseIPStr string) (string, error) {
 	}
 
 	workerIP := make(net.IP, 16)
-	numBaseBytes := prefixLen / 8
+	// Round up to whole 16-bit groups so the marker doesn't share a group with the prefix.
+	numBaseBytes := (prefixLen + 15) / 16 * 2
 
 	if numBaseBytes >= 14 {
 		return "", fmt.Errorf("prefix length %d is too large to append %x", prefixLen, workerMarker)
