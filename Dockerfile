@@ -14,7 +14,7 @@
 
 # setup cross-compile env
 ARG GOLANG_IMAGE=golang:1.26
-ARG BASE_IMAGE=gcr.io/distroless/base-debian12
+ARG BASE_IMAGE=gcr.io/distroless/base-debian13
 
 FROM --platform=$BUILDPLATFORM $GOLANG_IMAGE AS builder
 ARG TARGETARCH
